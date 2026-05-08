@@ -1,0 +1,24 @@
+{
+    "manifest_version": 3,
+    "name": "notecrawler",
+    "version": 1.0, 
+    "description": "Highlight text on any page and get an AI-generated summary instantly.",
+    
+    "permissions": ["activeTab", "contextMenus", "storage"],
+    "host_permissions": ["https://*/*"],
+    
+    "content_scripts": [{
+        "matches": ["https://*/*"],
+        "js": ["content.js"],
+        "run_at": "document_idle"
+    }],
+
+    "side_panel": {
+        "default_path": "sidepanel/sidepanel.html"
+    },
+
+    "background": {
+        "service_worker": "background.js",
+        "type": "module"
+    }
+}
