@@ -4,7 +4,11 @@
     "version": "1.0", 
     "description": "Highlight text on any page and get an AI-generated summary instantly.",
     
-    "permissions": ["activeTab", "contextMenus", "storage"],
+    "action": {
+        "default_title": "Open NoteCrawler"
+    },
+
+    "permissions": ["activeTab", "contextMenus", "sidePanel", "storage"],
     "host_permissions": ["https://*/*"],
     
     "content_scripts": [{
@@ -18,7 +22,6 @@
     },
 
     "background": {
-        "service_worker": "background.js",
-        "type": "module"
+        "service_worker": "background.js"
     }
 }
