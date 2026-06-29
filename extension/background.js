@@ -6,10 +6,10 @@ chrome.runtime.onInstalled.addListener(() => {
     });
 });
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === 'ContextMenu' && info.selectionText) {
-        await chrome.storage.local.set({lastHighlight: info.selectionText});
         chrome.sidePanel.open({tabId: tab.id});
+        chrome.storage.local.set({lastHighlight: info.selectionText});
     }
 });
 
