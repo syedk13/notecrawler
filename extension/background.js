@@ -3,8 +3,10 @@ let isPanelOpen = false;
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "PANEL_OPENED") {
         isPanelOpen = true;
+        console.log('Panel opened, flag is now true')
     } else if (message.type === "PANEL_CLOSED") {
         isPanelOpen = false;
+        console.log('Panel closed, flag is now false')
     }
 });
 
@@ -18,9 +20,6 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === 'ContextMenu' && info.selectionText) {
-        if (!isPanelOpen) {
-            chrome.sidePanel.open({tabId: tab.id});
-        }
         const result = await chrome.storage.local.get('highlightedHistory');
         const history = result.highlightedHistory || [];
         history.push({
@@ -28,14 +27,15 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
             timestamp: Date.now()
         });
         await chrome.storage.local.set({highlightedHistory: history});
+        if (!isPanelOpen) {
+            chrome.sidePanel.open({tabId: tab.id});
+        }
     }
 });
 
 chrome.action.onClicked.addListener((tab) => {
     console.log("Current panel state:", isPanelOpen);
     if (!isPanelOpen) {
-        chrome.sidePanel.open({ windowId: tab.windowId });
-    } else {
-        chrome.runtime.sendMessage({ type: "HIGHLIGHT_ADDED" });
+        chrome.sidePanel.open({tabId: tab.id});
     }
 });
