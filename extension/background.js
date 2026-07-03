@@ -16,14 +16,26 @@ chrome.runtime.onInstalled.addListener(() => {
     });
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === 'ContextMenu' && info.selectionText) {
-        chrome.sidePanel.open({tabId: tab.id});
-        chrome.storage.local.set({lastHighlight: info.selectionText});
+        if (!isPanelOpen) {
+            chrome.sidePanel.open({tabId: tab.id});
+        }
+        const result = await chrome.storage.local.get('highlightedHistory');
+        const history = result.highlightedHistory || [];
+        history.push({
+            text: info.selectionText,
+            timestamp: Date.now()
+        });
+        await chrome.storage.local.set({highlightedHistory: history});
     }
 });
 
 chrome.action.onClicked.addListener((tab) => {
     console.log("Current panel state:", isPanelOpen);
-    chrome.sidePanel.open({tabId: tab.id});
+    if (!isPanelOpen) {
+        chrome.sidePanel.open({ windowId: tab.windowId });
+    } else {
+        chrome.runtime.sendMessage({ type: "HIGHLIGHT_ADDED" });
+    }
 });
