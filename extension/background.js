@@ -1,3 +1,13 @@
+let isPanelOpen = false;
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === "PANEL_OPENED") {
+        isPanelOpen = true;
+    } else if (message.type === "PANEL_CLOSED") {
+        isPanelOpen = false;
+    }
+});
+
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
         id: 'ContextMenu',
@@ -14,5 +24,6 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 chrome.action.onClicked.addListener((tab) => {
+    console.log("Current panel state:", isPanelOpen);
     chrome.sidePanel.open({tabId: tab.id});
 });
