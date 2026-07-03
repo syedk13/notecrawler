@@ -1,13 +1,13 @@
 let isPanelOpen = false;
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === "PANEL_OPENED") {
-        isPanelOpen = true;
-        console.log('Panel opened, flag is now true')
-    } else if (message.type === "PANEL_CLOSED") {
+chrome.runtime.onConnect.addListener((port) => {
+    if (port.name !== 'panel') return;
+    isPanelOpen = true;
+    console.log('Panel opened, flag is now true');
+    port.onDisconnect.addListener(() => {
         isPanelOpen = false;
-        console.log('Panel closed, flag is now false')
-    }
+        console.log('Panel closed, flag is now false');
+    });
 });
 
 chrome.runtime.onInstalled.addListener(() => {

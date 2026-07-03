@@ -18,7 +18,7 @@ function renderAllHighlights(history, container) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    chrome.runtime.sendMessage({ type: "PANEL_OPENED" });
+    chrome.runtime.connect({ name: 'panel' });
 
     const container = document.getElementById('side-panel-content');
     if (!container) {
@@ -40,6 +40,3 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 });
 
-window.addEventListener('unload', () => {
-    chrome.runtime.sendMessage({ type: "PANEL_CLOSED" });
-});
