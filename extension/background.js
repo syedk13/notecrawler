@@ -20,6 +20,9 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === 'ContextMenu' && info.selectionText) {
+        if (!isPanelOpen) {
+            chrome.sidePanel.open({tabId: tab.id});
+        }
         const result = await chrome.storage.local.get('highlightedHistory');
         const history = result.highlightedHistory || [];
         history.push({
@@ -27,9 +30,6 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
             timestamp: Date.now()
         });
         await chrome.storage.local.set({highlightedHistory: history});
-        if (!isPanelOpen) {
-            chrome.sidePanel.open({tabId: tab.id});
-        }
     }
 });
 
