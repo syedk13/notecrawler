@@ -18,18 +18,20 @@ chrome.runtime.onInstalled.addListener(() => {
     });
 });
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === 'ContextMenu' && info.selectionText) {
         if (!isPanelOpen) {
             chrome.sidePanel.open({tabId: tab.id});
         }
-        const result = await chrome.storage.local.get('highlightedHistory');
-        const history = result.highlightedHistory || [];
-        history.push({
-            text: info.selectionText,
-            timestamp: Date.now()
-        });
-        await chrome.storage.local.set({highlightedHistory: history});
+        ;(async () => {
+            const result = await chrome.storage.local.get('highlightedHistory');
+            const history = result.highlightedHistory || [];
+            history.push({
+                text: info.selectionText,
+                timestamp: Date.now()
+            });
+            await chrome.storage.local.set({highlightedHistory: history});
+        })();
     }
 });
 
