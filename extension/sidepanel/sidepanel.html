@@ -4,11 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Side Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-    <div id="side-panel-content">  
-        
+<body class="flex flex-col h-screen bg-white text-sm">
+
+    <div id="side-panel-content" class="flex-1 overflow-y-auto p-3 space-y-2">
     </div>
+
+    <div class="flex items-end gap-2 border-t border-gray-200 p-3">
+        <textarea
+            id="user-input"
+            rows="1"
+            placeholder="Ask a question..."
+            class="flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        ></textarea>
+        <button
+            id="send-btn"
+            class="rounded-lg bg-blue-600 px-3 py-2 text-white text-sm font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >Send</button>
+    </div>
+
     <script src="sidepanel.js"></script>
 </body>
 </html>
