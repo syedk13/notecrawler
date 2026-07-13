@@ -1,6 +1,8 @@
 let isPanelOpen = false;
 let isOpening = false;
 
+chrome.storage.local.remove('highlightedHistory');
+
 chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'panel') return;
     isOpening = false;
@@ -28,13 +30,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         }
         ;(async () => {
             try {
-                const result = await chrome.storage.local.get('highlightedHistory');
-                const history = result.highlightedHistory || [];
-                history.push({
-                    text: info.selectionText,
+                const result = await chrome.storage.local.get('conversationState');
+                const state = result.conversationState || [];
+                state.push({
+                    id: crypto.randomUUID(),
+                    role: 'user',
+                    type: 'highlight',
+                    content: info.selectionText,
+                    contextRef: null,
                     timestamp: Date.now()
                 });
-                await chrome.storage.local.set({highlightedHistory: history});
+                await chrome.storage.local.set({conversationState: state});
             } catch (err) {
                 console.error('Failed to save highlight to storage:', err);
             }

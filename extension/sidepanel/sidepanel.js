@@ -55,17 +55,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    const result = await chrome.storage.local.get('highlightedHistory');
-    renderAllHighlights(result.highlightedHistory, container);
+    const result = await chrome.storage.local.get('conversationState');
+    conversationState = result.conversationState || [];
+    renderConversation(container);
 
     chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== 'local' || !changes.highlightedHistory) return;
-        const newHistory = changes.highlightedHistory.newValue;
-        const latestItem = newHistory[newHistory.length - 1];
-        // Remove empty state if present, then append only the new card
-        const emptyState = container.querySelector('.empty-state');
-        if (emptyState) emptyState.remove();
-        appendHighlightCard(latestItem, container);
+        if (area !== 'local' || !changes.conversationState) return;
+        conversationState = changes.conversationState.newValue || [];
+        renderConversation(container);
     });
 });
 
