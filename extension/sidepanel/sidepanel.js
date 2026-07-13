@@ -1,20 +1,49 @@
-function appendHighlightCard(item, container) {
-    const highlightItem = document.createElement('div');
-    highlightItem.textContent = item.text;
-    highlightItem.classList.add('highlight-item');
-    container.appendChild(highlightItem);
+let conversationState = [];
+
+function createHighlightCard(message) {
+    const card = document.createElement('div');
+    card.classList.add('highlight-item');
+    card.dataset.id = message.id;
+    card.textContent = message.content;
+    return card;
 }
 
-function renderAllHighlights(history, container) {
+function createChatBubble(message) {
+    const isUser = message.role === 'user';
+    const wrapper = document.createElement('div');
+    wrapper.classList.add('flex', isUser ? 'justify-end' : 'justify-start');
+    wrapper.dataset.id = message.id;
+
+    const bubble = document.createElement('div');
+    bubble.classList.add(
+        'max-w-[85%]', 'rounded-lg', 'px-3', 'py-2', 'text-sm', 'whitespace-pre-wrap',
+        ...(isUser
+            ? ['bg-blue-600', 'text-white']
+            : ['bg-gray-100', 'text-gray-800'])
+    );
+    bubble.textContent = message.content;
+
+    wrapper.appendChild(bubble);
+    return wrapper;
+}
+
+function renderConversation(container) {
     container.innerHTML = '';
-    if (!history?.length) {
+
+    if (!conversationState.length) {
         const emptyState = document.createElement('p');
         emptyState.textContent = 'No highlights yet. Select text on a page and choose "Ask NoteCrawler".';
         emptyState.classList.add('empty-state');
         container.appendChild(emptyState);
         return;
     }
-    history.forEach(item => appendHighlightCard(item, container));
+
+    for (const message of conversationState) {
+        const el = (message.role === 'user' && message.type === 'highlight')
+            ? createHighlightCard(message)
+            : createChatBubble(message);
+        container.appendChild(el);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
