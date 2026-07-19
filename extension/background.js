@@ -1,8 +1,6 @@
 let isPanelOpen = false;
 let isOpening = false;
 
-chrome.storage.local.remove('highlightedHistory');
-
 chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'panel') return;
     isOpening = false;
@@ -15,6 +13,7 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+    chrome.storage.local.remove(['highlightedHistory', 'lastHighlight']);
     chrome.contextMenus.create({
         id: 'ContextMenu',
         title: 'Ask NoteCrawler',
@@ -36,7 +35,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
                     id: crypto.randomUUID(),
                     role: 'user',
                     type: 'highlight',
-                    content: info.selectionText,
+                    content: info.selectionText.trim(),
                     contextRef: null,
                     timestamp: Date.now()
                 });

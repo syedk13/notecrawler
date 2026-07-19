@@ -32,7 +32,7 @@ function renderConversation(container) {
 
     if (!conversationState.length) {
         const emptyState = document.createElement('p');
-        emptyState.textContent = 'No highlights yet. Select text on a page and choose "Ask NoteCrawler".';
+        emptyState.textContent = 'Select text on any page and choose "Ask NoteCrawler" to start a conversation.';
         emptyState.classList.add('empty-state');
         container.appendChild(emptyState);
         return;
