@@ -1,16 +1,9 @@
-let isPanelOpen = false;
-let isOpening = false;
-
-chrome.runtime.onConnect.addListener((port) => {
-    if (port.name !== 'panel') return;
-    isOpening = false;
-    isPanelOpen = true;
-    console.log('Panel opened, flag is now true');
-    port.onDisconnect.addListener(() => {
-        isPanelOpen = false;
-        console.log('Panel closed, flag is now false');
+function openSidePanel(tabId) {
+    chrome.sidePanel.open({tabId}).catch(err => {
+        if (err?.message?.includes('Side panel is already open')) return;
+        console.debug('Failed to open side panel:', err);
     });
-});
+}
 
 chrome.runtime.onInstalled.addListener(() => {
     chrome.storage.local.remove(['highlightedHistory', 'lastHighlight']);
@@ -23,10 +16,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === 'ContextMenu' && info.selectionText?.trim()) {
-        if (!isPanelOpen && !isOpening) {
-            isOpening = true;
-            chrome.sidePanel.open({tabId: tab.id}).catch(err => console.error('Failed to open side panel:', err));
-        }
+        openSidePanel(tab.id);
         ;(async () => {
             try {
                 const result = await chrome.storage.local.get('conversationState');
@@ -48,9 +38,5 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 chrome.action.onClicked.addListener((tab) => {
-    console.log("Current panel state:", isPanelOpen);
-    if (!isPanelOpen && !isOpening) {
-        isOpening = true;
-        chrome.sidePanel.open({tabId: tab.id}).catch(err => console.error('Failed to open side panel:', err));
-    }
+    openSidePanel(tab.id);
 });

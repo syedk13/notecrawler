@@ -47,8 +47,6 @@ function renderConversation(container) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    chrome.runtime.connect({ name: 'panel' });
-
     const container = document.getElementById('side-panel-content');
     if (!container) {
         console.error('Side Panel container not found.');
