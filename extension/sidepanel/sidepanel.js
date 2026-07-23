@@ -1,17 +1,28 @@
 const FORCE_MOCK_FAILURE = false;
 
-let conversationState = [];
+let threads = {};
+let activeThreadId = 'main';
 
 // --- Storage helpers ---
 
-async function readState() {
-    const result = await chrome.storage.local.get('conversationState');
-    return result.conversationState || [];
+async function readStorage() {
+    const result = await chrome.storage.local.get(['threads', 'activeThreadId']);
+    const stored = result.threads || {};
+    if (!stored.main) {
+        stored.main = { id: 'main', title: 'Main Conversation', parentResponseId: null, messages: [] };
+    }
+    return {
+        threads: stored,
+        activeThreadId: result.activeThreadId || 'main'
+    };
 }
 
-async function modifyState(updater) {
-    const state = await readState();
-    await chrome.storage.local.set({ conversationState: updater(state) });
+async function modifyThreadMessages(threadId, updater) {
+    const { threads: current } = await readStorage();
+    const thread = current[threadId] || { id: threadId, title: 'Thread', parentResponseId: null, messages: [] };
+    await chrome.storage.local.set({
+        threads: { ...current, [threadId]: { ...thread, messages: updater(thread.messages) } }
+    });
 }
 
 // --- DOM builders ---
@@ -56,10 +67,13 @@ function createChatBubble(message) {
     const isFailed = isUser && message.status === 'failed';
 
     const wrapper = document.createElement('div');
-    wrapper.classList.add('flex', ...(isFailed
-        ? ['flex-col', 'items-end', 'gap-1']
-        : [isUser ? 'justify-end' : 'justify-start']
-    ));
+    if (!isUser) {
+        wrapper.classList.add('flex', 'flex-col', 'items-start', 'gap-0.5');
+    } else if (isFailed) {
+        wrapper.classList.add('flex', 'flex-col', 'items-end', 'gap-1');
+    } else {
+        wrapper.classList.add('flex', 'justify-end');
+    }
     wrapper.dataset.id = message.id;
 
     const bubble = document.createElement('div');
@@ -78,6 +92,14 @@ function createChatBubble(message) {
         wrapper.appendChild(retryBtn);
     }
 
+    if (!isUser) {
+        const forkBtn = document.createElement('button');
+        forkBtn.textContent = 'Fork thread';
+        forkBtn.dataset.forkId = message.id;
+        forkBtn.classList.add('text-xs', 'text-blue-400', 'hover:underline');
+        wrapper.appendChild(forkBtn);
+    }
+
     return wrapper;
 }
 
@@ -86,7 +108,9 @@ function createChatBubble(message) {
 function renderConversation(container) {
     container.innerHTML = '';
 
-    if (!conversationState.length) {
+    const messages = threads[activeThreadId]?.messages || [];
+
+    if (!messages.length) {
         const emptyState = document.createElement('p');
         emptyState.textContent = 'Select text on any page and choose "Ask NoteCrawler" to start a conversation.';
         emptyState.classList.add('empty-state');
@@ -95,13 +119,10 @@ function renderConversation(container) {
         return;
     }
 
-    for (const message of conversationState) {
-        let el;
-        if (message.role === 'user' && message.type === 'highlight') {
-            el = createHighlightCard(message);
-        } else {
-            el = createChatBubble(message);
-        }
+    for (const message of messages) {
+        const el = (message.role === 'user' && message.type === 'highlight')
+            ? createHighlightCard(message)
+            : createChatBubble(message);
         container.appendChild(el);
 
         if (message.role === 'user' && message.status === 'pending') {
@@ -112,20 +133,55 @@ function renderConversation(container) {
     container.scrollTop = container.scrollHeight;
 }
 
+function createThreadMenuItem(threadId, title, isChild) {
+    const btn = document.createElement('button');
+    btn.classList.add(
+        'w-full', 'text-left', 'px-3', 'py-1.5', 'text-xs',
+        'hover:bg-gray-50', 'text-gray-700', 'truncate'
+    );
+    if (isChild) btn.classList.add('pl-6');
+    if (threadId === activeThreadId) btn.classList.add('font-semibold', 'text-blue-600');
+    btn.textContent = (isChild ? '↳ ' : '') + title;
+    btn.dataset.threadId = threadId;
+    return btn;
+}
+
+function renderThreadMenu() {
+    const menu = document.getElementById('thread-menu');
+    const titleEl = document.getElementById('thread-title');
+    if (!menu) return;
+
+    menu.innerHTML = '';
+
+    if (threads['main']) {
+        menu.appendChild(createThreadMenuItem('main', 'Main Conversation', false));
+    }
+
+    for (const thread of Object.values(threads)) {
+        if (thread.id === 'main') continue;
+        menu.appendChild(createThreadMenuItem(thread.id, thread.title, true));
+    }
+
+    if (titleEl) {
+        const active = threads[activeThreadId];
+        titleEl.textContent = active?.title ?? 'Main Conversation';
+    }
+}
+
 // --- Mock response pipeline ---
 
-async function mockResponse(messageId) {
+async function mockResponse(messageId, threadId) {
     await new Promise(resolve => setTimeout(resolve, 600 + Math.random() * 400));
 
     if (FORCE_MOCK_FAILURE) {
-        await modifyState(state =>
-            state.map(msg => msg.id === messageId ? { ...msg, status: 'failed' } : msg)
+        await modifyThreadMessages(threadId, messages =>
+            messages.map(msg => msg.id === messageId ? { ...msg, status: 'failed' } : msg)
         );
         return;
     }
 
-    await modifyState(state => {
-        const updated = state.map(msg =>
+    await modifyThreadMessages(threadId, messages => {
+        const updated = messages.map(msg =>
             msg.id === messageId ? { ...msg, status: 'answered' } : msg
         );
         updated.push({
@@ -143,15 +199,20 @@ async function mockResponse(messageId) {
 
 async function submitMessage(text) {
     const messageId = crypto.randomUUID();
-    await modifyState(state => [...state, {
+    const capturedThreadId = activeThreadId;
+    const contextRef = capturedThreadId === 'main'
+        ? null
+        : (threads[capturedThreadId]?.parentResponseId ?? null);
+
+    await modifyThreadMessages(capturedThreadId, messages => [...messages, {
         id: messageId,
         role: 'user',
         content: text,
-        contextRef: null,
+        contextRef,
         status: 'pending',
         timestamp: Date.now()
     }]);
-    mockResponse(messageId);
+    mockResponse(messageId, capturedThreadId);
 }
 
 // --- Init ---
@@ -165,25 +226,47 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const textarea = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
+    const menuBtn = document.getElementById('menu-btn');
+    const threadMenu = document.getElementById('thread-menu');
 
-    const result = await chrome.storage.local.get('conversationState');
-    conversationState = result.conversationState || [];
+    const stored = await readStorage();
+    threads = stored.threads;
+    activeThreadId = stored.activeThreadId;
     renderConversation(container);
+    renderThreadMenu();
+
+    // --- Storage changes ---
 
     chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== 'local' || !changes.conversationState) return;
-        const oldState = changes.conversationState.oldValue || [];
-        const newState = changes.conversationState.newValue || [];
-        conversationState = newState;
-        renderConversation(container);
+        if (area !== 'local') return;
 
-        const oldIds = new Set(oldState.map(m => m.id));
-        for (const msg of newState) {
-            if (!oldIds.has(msg.id) && msg.role === 'user' && msg.type === 'highlight' && msg.status === 'pending') {
-                mockResponse(msg.id);
+        if (changes.activeThreadId) {
+            activeThreadId = changes.activeThreadId.newValue || 'main';
+        }
+
+        if (changes.threads) {
+            const oldThreads = changes.threads.oldValue || {};
+            const newThreads = changes.threads.newValue || {};
+            threads = newThreads;
+
+            // Fire mockResponse for brand-new pending highlights in the active thread only
+            const oldMessages = oldThreads[activeThreadId]?.messages || [];
+            const newMessages = newThreads[activeThreadId]?.messages || [];
+            const oldIds = new Set(oldMessages.map(m => m.id));
+            for (const msg of newMessages) {
+                if (!oldIds.has(msg.id) && msg.role === 'user' && msg.type === 'highlight' && msg.status === 'pending') {
+                    mockResponse(msg.id, activeThreadId);
+                }
             }
         }
+
+        if (changes.threads || changes.activeThreadId) {
+            renderConversation(container);
+            renderThreadMenu();
+        }
     });
+
+    // --- Input ---
 
     function handleSubmit() {
         const text = textarea.value.trim();
@@ -201,12 +284,58 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
+    // --- 3-dots menu ---
+
+    menuBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        threadMenu.classList.toggle('hidden');
+    });
+
+    document.addEventListener('click', () => {
+        threadMenu.classList.add('hidden');
+    });
+
+    threadMenu.addEventListener('click', async e => {
+        const threadId = e.target.dataset.threadId;
+        if (!threadId) return;
+        await chrome.storage.local.set({ activeThreadId: threadId });
+    });
+
+    // --- Delegated actions (retry + fork) ---
+
     container.addEventListener('click', async e => {
         const retryId = e.target.dataset.retryId;
-        if (!retryId) return;
-        await modifyState(state =>
-            state.map(msg => msg.id === retryId ? { ...msg, status: 'pending' } : msg)
-        );
-        mockResponse(retryId);
+        if (retryId) {
+            const capturedThreadId = activeThreadId;
+            await modifyThreadMessages(capturedThreadId, messages =>
+                messages.map(msg => msg.id === retryId ? { ...msg, status: 'pending' } : msg)
+            );
+            mockResponse(retryId, capturedThreadId);
+            return;
+        }
+
+        const forkId = e.target.dataset.forkId;
+        if (forkId) {
+            const { threads: current } = await readStorage();
+            const modelMessage = current[activeThreadId]?.messages.find(m => m.id === forkId);
+            if (!modelMessage) return;
+
+            const raw = modelMessage.content.trim();
+            const title = raw.length > 47 ? raw.slice(0, 47) + '…' : raw;
+            const newThreadId = crypto.randomUUID();
+
+            await chrome.storage.local.set({
+                threads: {
+                    ...current,
+                    [newThreadId]: {
+                        id: newThreadId,
+                        title,
+                        parentResponseId: forkId,
+                        messages: [modelMessage]
+                    }
+                },
+                activeThreadId: newThreadId
+            });
+        }
     });
 });
