@@ -17,11 +17,28 @@ async function modifyState(updater) {
 // --- DOM builders ---
 
 function createHighlightCard(message) {
+    const wrapper = document.createElement('div');
+    wrapper.dataset.id = message.id;
+
     const card = document.createElement('div');
     card.classList.add('highlight-item');
-    card.dataset.id = message.id;
     card.textContent = message.content;
-    return card;
+    wrapper.appendChild(card);
+
+    if (message.status === 'pending') {
+        const loading = document.createElement('p');
+        loading.classList.add('text-xs', 'text-gray-400', 'italic', 'mt-1');
+        loading.textContent = 'Generating response…';
+        wrapper.appendChild(loading);
+    } else if (message.status === 'failed') {
+        const retryBtn = document.createElement('button');
+        retryBtn.textContent = 'Retry';
+        retryBtn.dataset.retryId = message.id;
+        retryBtn.classList.add('text-xs', 'text-red-500', 'hover:underline', 'mt-1', 'block');
+        wrapper.appendChild(retryBtn);
+    }
+
+    return wrapper;
 }
 
 function createPendingBubble(message) {
@@ -130,7 +147,7 @@ async function mockResponse(messageId) {
             id: crypto.randomUUID(),
             role: 'model',
             text: 'This is a mock response from NoteCrawler.',
-            contextRef: null,
+            contextRef: messageId,
             timestamp: Date.now()
         });
         return updated;
@@ -170,8 +187,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local' || !changes.conversationState) return;
-        conversationState = changes.conversationState.newValue || [];
+        const oldState = changes.conversationState.oldValue || [];
+        const newState = changes.conversationState.newValue || [];
+        conversationState = newState;
         renderConversation(container);
+
+        const oldIds = new Set(oldState.map(m => m.id));
+        for (const msg of newState) {
+            if (!oldIds.has(msg.id) && msg.role === 'user' && msg.type === 'highlight' && msg.status === 'pending') {
+                mockResponse(msg.id);
+            }
+        }
     });
 
     function handleSubmit() {

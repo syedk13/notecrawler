@@ -27,6 +27,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
                     type: 'highlight',
                     content: info.selectionText.trim(),
                     contextRef: null,
+                    status: 'pending',
                     timestamp: Date.now()
                 });
                 await chrome.storage.local.set({conversationState: state});
