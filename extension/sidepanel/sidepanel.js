@@ -41,17 +41,16 @@ function createHighlightCard(message) {
     return wrapper;
 }
 
-function createPendingBubble(message) {
+function createLoadingIndicator() {
     const wrapper = document.createElement('div');
-    wrapper.classList.add('flex', 'justify-end');
-    wrapper.dataset.id = message.id;
+    wrapper.classList.add('flex', 'justify-start');
 
     const bubble = document.createElement('div');
     bubble.classList.add(
         'max-w-[85%]', 'rounded-lg', 'px-3', 'py-2', 'text-sm',
-        'whitespace-pre-wrap', 'bg-blue-400', 'text-white', 'italic', 'opacity-70'
+        'bg-gray-100', 'text-gray-500', 'italic'
     );
-    bubble.textContent = message.text;
+    bubble.textContent = 'Generating response…';
 
     wrapper.appendChild(bubble);
     return wrapper;
@@ -114,14 +113,16 @@ function renderConversation(container) {
         let el;
         if (message.role === 'user' && message.type === 'highlight') {
             el = createHighlightCard(message);
-        } else if (message.role === 'user' && message.status === 'pending') {
-            el = createPendingBubble(message);
         } else if (message.role === 'user' && message.status === 'failed') {
             el = createFailedBubble(message);
         } else {
             el = createChatBubble(message);
         }
         container.appendChild(el);
+
+        if (message.role === 'user' && message.status === 'pending') {
+            container.appendChild(createLoadingIndicator());
+        }
     }
 
     container.scrollTop = container.scrollHeight;
