@@ -25,12 +25,7 @@ function createHighlightCard(message) {
     card.textContent = message.content;
     wrapper.appendChild(card);
 
-    if (message.status === 'pending') {
-        const loading = document.createElement('p');
-        loading.classList.add('text-xs', 'text-gray-400', 'italic', 'mt-1');
-        loading.textContent = 'Generating response…';
-        wrapper.appendChild(loading);
-    } else if (message.status === 'failed') {
+    if (message.status === 'failed') {
         const retryBtn = document.createElement('button');
         retryBtn.textContent = 'Retry';
         retryBtn.dataset.retryId = message.id;
@@ -56,32 +51,15 @@ function createLoadingIndicator() {
     return wrapper;
 }
 
-function createFailedBubble(message) {
-    const wrapper = document.createElement('div');
-    wrapper.classList.add('flex', 'flex-col', 'items-end', 'gap-1');
-    wrapper.dataset.id = message.id;
-
-    const bubble = document.createElement('div');
-    bubble.classList.add(
-        'max-w-[85%]', 'rounded-lg', 'px-3', 'py-2', 'text-sm',
-        'whitespace-pre-wrap', 'bg-blue-600', 'text-white'
-    );
-    bubble.textContent = message.text;
-
-    const retryBtn = document.createElement('button');
-    retryBtn.textContent = 'Retry';
-    retryBtn.dataset.retryId = message.id;
-    retryBtn.classList.add('text-xs', 'text-red-500', 'hover:underline');
-
-    wrapper.appendChild(bubble);
-    wrapper.appendChild(retryBtn);
-    return wrapper;
-}
-
 function createChatBubble(message) {
     const isUser = message.role === 'user';
+    const isFailed = isUser && message.status === 'failed';
+
     const wrapper = document.createElement('div');
-    wrapper.classList.add('flex', isUser ? 'justify-end' : 'justify-start');
+    wrapper.classList.add('flex', ...(isFailed
+        ? ['flex-col', 'items-end', 'gap-1']
+        : [isUser ? 'justify-end' : 'justify-start']
+    ));
     wrapper.dataset.id = message.id;
 
     const bubble = document.createElement('div');
@@ -89,9 +67,17 @@ function createChatBubble(message) {
         'max-w-[85%]', 'rounded-lg', 'px-3', 'py-2', 'text-sm', 'whitespace-pre-wrap',
         ...(isUser ? ['bg-blue-600', 'text-white'] : ['bg-gray-100', 'text-gray-800'])
     );
-    bubble.textContent = message.text;
-
+    bubble.textContent = message.content;
     wrapper.appendChild(bubble);
+
+    if (isFailed) {
+        const retryBtn = document.createElement('button');
+        retryBtn.textContent = 'Retry';
+        retryBtn.dataset.retryId = message.id;
+        retryBtn.classList.add('text-xs', 'text-red-500', 'hover:underline');
+        wrapper.appendChild(retryBtn);
+    }
+
     return wrapper;
 }
 
@@ -113,8 +99,6 @@ function renderConversation(container) {
         let el;
         if (message.role === 'user' && message.type === 'highlight') {
             el = createHighlightCard(message);
-        } else if (message.role === 'user' && message.status === 'failed') {
-            el = createFailedBubble(message);
         } else {
             el = createChatBubble(message);
         }
@@ -147,7 +131,7 @@ async function mockResponse(messageId) {
         updated.push({
             id: crypto.randomUUID(),
             role: 'model',
-            text: 'This is a mock response from NoteCrawler.',
+            content: 'This is a mock response from NoteCrawler.',
             contextRef: messageId,
             timestamp: Date.now()
         });
@@ -162,7 +146,7 @@ async function submitMessage(text) {
     await modifyState(state => [...state, {
         id: messageId,
         role: 'user',
-        text,
+        content: text,
         contextRef: null,
         status: 'pending',
         timestamp: Date.now()
