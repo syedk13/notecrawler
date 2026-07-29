@@ -6,9 +6,9 @@ function openSidePanel(tabId) {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-    chrome.storage.local.remove(['highlightedHistory', 'lastHighlight', 'conversationState']);
+    chrome.storage.local.remove(['highlightedHistory', 'lastHighlight', 'threads']);
     chrome.storage.local.set({
-        threads: { main: { id: 'main', title: 'Main Conversation', parentResponseId: null, messages: [] } },
+        conversationState: [],
         activeThreadId: 'main'
     });
     chrome.contextMenus.create({
@@ -23,25 +23,19 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         openSidePanel(tab.id);
         ;(async () => {
             try {
-                const result = await chrome.storage.local.get(['threads', 'activeThreadId']);
-                const activeId = result.activeThreadId || 'main';
-                const allThreads = result.threads || {
-                    main: { id: 'main', title: 'Main Conversation', parentResponseId: null, messages: [] }
-                };
-                const thread = allThreads[activeId] || { id: activeId, title: 'Thread', parentResponseId: null, messages: [] };
-                const contextRef = activeId === 'main' ? null : (thread.parentResponseId ?? null);
-
-                thread.messages.push({
+                const result = await chrome.storage.local.get('conversationState');
+                const state = result.conversationState || [];
+                state.push({
                     id: crypto.randomUUID(),
                     role: 'user',
                     type: 'highlight',
                     content: info.selectionText.trim(),
-                    contextRef,
+                    contextRef: null,
+                    threadId: 'main',
                     status: 'pending',
                     timestamp: Date.now()
                 });
-
-                await chrome.storage.local.set({ threads: { ...allThreads, [activeId]: thread } });
+                await chrome.storage.local.set({ conversationState: state });
             } catch (err) {
                 console.error('Failed to save highlight to storage:', err);
             }
