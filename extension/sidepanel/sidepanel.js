@@ -140,7 +140,7 @@ function createChatBubble(message) {
         wrapper.appendChild(retryBtn);
     }
 
-    if (!isUser && message.contextRef !== null) {
+    if (message.role === 'model' && message.type === 'summary') {
         const forkBtn = document.createElement('button');
         forkBtn.textContent = 'Fork thread';
         forkBtn.dataset.forkAnchor = message.contextRef;
@@ -242,6 +242,8 @@ async function mockResponse(messageId) {
 
             const responseType = parent.type === 'highlight' ? 'summary' : 'text';
 
+            const responseThreadId = parent.type === 'highlight' ? parent.id : parent.threadId;
+
             const updated = state.map(msg =>
                 msg.id === messageId ? { ...msg, status: 'answered' } : msg
             );
@@ -251,7 +253,7 @@ async function mockResponse(messageId) {
                 type: responseType,
                 content: 'This is a mock response from NoteCrawler.',
                 contextRef: responseContextRef,
-                threadId: parent.threadId,
+                threadId: responseThreadId,
                 replyTo: parent.id,
                 timestamp: Date.now()
             });
