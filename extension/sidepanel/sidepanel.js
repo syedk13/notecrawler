@@ -28,9 +28,18 @@ function getThreadMessages() {
     if (activeThreadId === 'main') {
         return conversationState.filter(m => m.threadId === 'main');
     }
+    // Fork view: pull in the anchor highlight AND its summary as the header.
+    // Both live in 'main' (stored once) but are displayed at the top of the fork.
     const anchor = conversationState.find(m => m.id === activeThreadId && m.threadId === 'main');
+    const summary = conversationState.find(
+        m => m.role === 'model' && m.type === 'summary' && m.contextRef === activeThreadId
+    );
     const threadMessages = conversationState.filter(m => m.threadId === activeThreadId);
-    return anchor ? [anchor, ...threadMessages] : threadMessages;
+
+    const header = [];
+    if (anchor) header.push(anchor);
+    if (summary) header.push(summary);
+    return [...header, ...threadMessages];
 }
 
 // --- Thread menu helpers ---
@@ -140,7 +149,9 @@ function createChatBubble(message) {
         wrapper.appendChild(retryBtn);
     }
 
-    if (message.role === 'model' && message.type === 'summary') {
+    // Fork button appears only on a summary, and only while viewing main.
+    // In a fork the summary is shown as a header, so it must not offer forking.
+    if (message.role === 'model' && message.type === 'summary' && activeThreadId === 'main') {
         const forkBtn = document.createElement('button');
         forkBtn.textContent = 'Fork thread';
         forkBtn.dataset.forkAnchor = message.contextRef;
@@ -242,8 +253,6 @@ async function mockResponse(messageId) {
 
             const responseType = parent.type === 'highlight' ? 'summary' : 'text';
 
-            const responseThreadId = parent.type === 'highlight' ? parent.id : parent.threadId;
-
             const updated = state.map(msg =>
                 msg.id === messageId ? { ...msg, status: 'answered' } : msg
             );
@@ -253,7 +262,7 @@ async function mockResponse(messageId) {
                 type: responseType,
                 content: 'This is a mock response from NoteCrawler.',
                 contextRef: responseContextRef,
-                threadId: responseThreadId,
+                threadId: parent.threadId,
                 replyTo: parent.id,
                 timestamp: Date.now()
             });
