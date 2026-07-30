@@ -46,8 +46,31 @@ function getThreadLabel(threadId) {
 function getDerivedThreadIds() {
     const ids = new Set(['main']);
     for (const m of conversationState) ids.add(m.threadId);
-    if (activeThreadId !== 'main') ids.add(activeThreadId); // empty-fork safety
+    if (activeThreadId !== 'main') ids.add(activeThreadId);
     return ids;
+}
+
+// --- Response reconciliation ---
+// A pending message needs a response if no model message already references it.
+// This is idempotent: safe to call from both the initial read and onChanged,
+// and it never double-triggers because it checks for an existing response.
+
+const inFlight = new Set();
+
+function pendingNeedsResponse(state, msg) {
+    if (msg.role !== 'user' || msg.status !== 'pending') return false;
+    if (inFlight.has(msg.id)) return false;
+    const hasResponse = state.some(m => m.role === 'model' && m.replyTo === msg.id);
+    return !hasResponse;
+}
+
+function reconcilePending(state) {
+    for (const msg of state) {
+        if (pendingNeedsResponse(state, msg)) {
+            inFlight.add(msg.id);
+            mockResponse(msg.id);
+        }
+    }
 }
 
 // --- DOM builders ---
@@ -150,7 +173,11 @@ function renderConversation(container) {
             : createChatBubble(message);
         container.appendChild(el);
 
-        if (message.role === 'user' && message.status === 'pending') {
+        // Show the loading indicator for a pending message that has no response yet.
+        const awaitingResponse = message.role === 'user'
+            && message.status === 'pending'
+            && !conversationState.some(m => m.role === 'model' && m.replyTo === message.id);
+        if (awaitingResponse) {
             container.appendChild(createLoadingIndicator());
         }
     }
@@ -195,31 +222,44 @@ function renderThreadMenu() {
 async function mockResponse(messageId) {
     await new Promise(resolve => setTimeout(resolve, 600 + Math.random() * 400));
 
-    if (FORCE_MOCK_FAILURE) {
-        await modifyState(state =>
-            state.map(msg => msg.id === messageId ? { ...msg, status: 'failed' } : msg)
-        );
-        return;
-    }
+    try {
+        if (FORCE_MOCK_FAILURE) {
+            await modifyState(state =>
+                state.map(msg => msg.id === messageId ? { ...msg, status: 'failed' } : msg)
+            );
+            return;
+        }
 
-    await modifyState(state => {
-        const parent = state.find(m => m.id === messageId);
-        if (!parent) return state;
+        await modifyState(state => {
+            const parent = state.find(m => m.id === messageId);
+            if (!parent) return state;
 
-        const updated = state.map(msg =>
-            msg.id === messageId ? { ...msg, status: 'answered' } : msg
-        );
-        updated.push({
-            id: crypto.randomUUID(),
-            role: 'model',
-            type: 'text',
-            content: 'This is a mock response from NoteCrawler.',
-            contextRef: parent.contextRef,
-            threadId: parent.threadId,
-            timestamp: Date.now()
+            // A highlight's summary references the highlight's OWN id.
+            // A chat reply inherits its parent's contextRef.
+            const responseContextRef = parent.type === 'highlight'
+                ? parent.id
+                : parent.contextRef;
+
+            const responseType = parent.type === 'highlight' ? 'summary' : 'text';
+
+            const updated = state.map(msg =>
+                msg.id === messageId ? { ...msg, status: 'answered' } : msg
+            );
+            updated.push({
+                id: crypto.randomUUID(),
+                role: 'model',
+                type: responseType,
+                content: 'This is a mock response from NoteCrawler.',
+                contextRef: responseContextRef,
+                threadId: parent.threadId,
+                replyTo: parent.id,
+                timestamp: Date.now()
+            });
+            return updated;
         });
-        return updated;
-    });
+    } finally {
+        inFlight.delete(messageId);
+    }
 }
 
 // --- Submission ---
@@ -229,6 +269,7 @@ async function submitMessage(text) {
     const capturedThreadId = activeThreadId;
     const contextRef = capturedThreadId === 'main' ? null : capturedThreadId;
 
+    inFlight.add(messageId);
     await modifyState(messages => [...messages, {
         id: messageId,
         role: 'user',
@@ -262,7 +303,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderConversation(container);
     renderThreadMenu();
 
-    // --- Storage changes ---
+    // Trigger responses for any pending messages that arrived while the panel
+    // was closed (e.g. a context-menu highlight). Idempotent.
+    reconcilePending(conversationState);
 
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
@@ -272,16 +315,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (changes.conversationState) {
-            const oldState = changes.conversationState.oldValue || [];
-            const newState = changes.conversationState.newValue || [];
-            conversationState = newState;
-
-            const oldIds = new Set(oldState.map(m => m.id));
-            for (const msg of newState) {
-                if (!oldIds.has(msg.id) && msg.role === 'user' && msg.type === 'highlight' && msg.status === 'pending') {
-                    mockResponse(msg.id);
-                }
-            }
+            conversationState = changes.conversationState.newValue || [];
+            reconcilePending(conversationState);
         }
 
         if (changes.conversationState || changes.activeThreadId) {
@@ -289,8 +324,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             renderThreadMenu();
         }
     });
-
-    // --- Input ---
 
     function handleSubmit() {
         const text = textarea.value.trim();
@@ -308,8 +341,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // --- 3-dots menu ---
-
     menuBtn.addEventListener('click', e => {
         e.stopPropagation();
         threadMenu.classList.toggle('hidden');
@@ -325,11 +356,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         await setActiveThread(threadId);
     });
 
-    // --- Delegated actions (retry + fork) ---
-
     container.addEventListener('click', async e => {
         const retryId = e.target.dataset.retryId;
         if (retryId) {
+            inFlight.add(retryId);
             await modifyState(messages =>
                 messages.map(msg => msg.id === retryId ? { ...msg, status: 'pending' } : msg)
             );
