@@ -9,16 +9,41 @@ chrome.runtime.onInstalled.addListener(() => {
     chrome.storage.local.remove(['highlightedHistory', 'lastHighlight', 'threads']);
     chrome.storage.local.set({
         conversationState: [],
-        activeThreadId: 'main'
+        activeThreadId: 'main',
+        annotations: []
     });
     chrome.contextMenus.create({
         id: 'ContextMenu',
         title: 'Ask NoteCrawler',
         contexts: ['selection']
     });
+    chrome.contextMenus.create({
+        id: 'AddAnnotation',
+        title: 'Add annotation',
+        contexts: ['selection']
+    });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId === 'AddAnnotation' && info.selectionText?.trim()) {
+        ;(async () => {
+            try {
+                const result = await chrome.storage.local.get('annotations');
+                const annotations = result.annotations || [];
+                annotations.push({
+                    id: crypto.randomUUID(),
+                    content: info.selectionText.trim(),
+                    sourceUrl: tab.url,
+                    pageTitle: tab.title,
+                    timestamp: Date.now()
+                });
+                await chrome.storage.local.set({ annotations });
+            } catch (err) {
+                console.error('Failed to save annotation to storage:', err);
+            }
+        })();
+    }
+
     if (info.menuItemId === 'ContextMenu' && info.selectionText?.trim()) {
         openSidePanel(tab.id);
         ;(async () => {
