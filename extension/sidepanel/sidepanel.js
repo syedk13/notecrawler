@@ -2,6 +2,8 @@ const FORCE_MOCK_FAILURE = false;
 
 let conversationState = [];
 let activeThreadId = 'main';
+let activeTab = 'conversation';
+const selectedAnnotationIds = new Set();
 
 // --- Storage helpers ---
 
@@ -294,6 +296,88 @@ async function submitMessage(text) {
     mockResponse(messageId);
 }
 
+// --- Annotations view ---
+
+function updateAskButton() {
+    const askBtn = document.getElementById('ask-btn');
+    if (!askBtn) return;
+    const hasSelection = selectedAnnotationIds.size > 0;
+    askBtn.disabled = !hasSelection;
+    askBtn.style.opacity = hasSelection ? '' : '0.5';
+    askBtn.style.cursor = hasSelection ? '' : 'not-allowed';
+}
+
+async function renderAnnotations() {
+    const list = document.getElementById('annotations-list');
+    if (!list) return;
+
+    const result = await chrome.storage.local.get('annotations');
+    const annotations = (result.annotations || []).slice().sort((a, b) => b.timestamp - a.timestamp);
+
+    list.innerHTML = '';
+
+    if (!annotations.length) {
+        const empty = document.createElement('p');
+        empty.textContent = 'No annotations yet. Select text on a page and choose "Add annotation."';
+        empty.classList.add('empty-state');
+        list.appendChild(empty);
+        return;
+    }
+
+    for (const ann of annotations) {
+        const isSelected = selectedAnnotationIds.has(ann.id);
+
+        const card = document.createElement('div');
+        card.dataset.annotationId = ann.id;
+        card.classList.add('rounded-lg', 'border', 'p-3');
+        if (isSelected) {
+            card.classList.add('bg-gray-100', 'border-gray-300');
+        } else {
+            card.classList.add('border-gray-200');
+        }
+        card.style.cursor = 'pointer';
+
+        const content = document.createElement('p');
+        content.classList.add('text-sm', 'text-gray-800');
+        content.textContent = ann.content;
+
+        const meta = document.createElement('p');
+        meta.classList.add('text-xs', 'text-gray-400', 'mt-1');
+        const truncUrl = ann.sourceUrl.length > 40 ? ann.sourceUrl.slice(0, 40) + '…' : ann.sourceUrl;
+        meta.textContent = `${ann.pageTitle} · ${truncUrl}`;
+
+        card.appendChild(content);
+        card.appendChild(meta);
+        list.appendChild(card);
+    }
+}
+
+function switchTab(tab) {
+    activeTab = tab;
+    const isConv = tab === 'conversation';
+
+    const convView = document.getElementById('conversation-view');
+    const annView = document.getElementById('annotations-view');
+    const tabConv = document.getElementById('tab-conversation');
+    const tabAnn = document.getElementById('tab-annotations');
+
+    if (convView) convView.style.display = isConv ? '' : 'none';
+    if (annView) annView.style.display = isConv ? 'none' : '';
+
+    if (tabConv) {
+        tabConv.classList.toggle('font-semibold', isConv);
+        tabConv.classList.toggle('text-blue-600', isConv);
+        tabConv.classList.toggle('text-gray-500', !isConv);
+    }
+    if (tabAnn) {
+        tabAnn.classList.toggle('font-semibold', !isConv);
+        tabAnn.classList.toggle('text-blue-600', !isConv);
+        tabAnn.classList.toggle('text-gray-500', isConv);
+    }
+
+    if (tab === 'annotations') renderAnnotations();
+}
+
 // --- Init ---
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -307,6 +391,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const sendBtn = document.getElementById('send-btn');
     const menuBtn = document.getElementById('menu-btn');
     const threadMenu = document.getElementById('thread-menu');
+    const tabConversationBtn = document.getElementById('tab-conversation');
+    const tabAnnotationsBtn = document.getElementById('tab-annotations');
+    const annotationsListEl = document.getElementById('annotations-list');
+    const askBtnEl = document.getElementById('ask-btn');
 
     const stored = await readState();
     conversationState = stored.conversationState;
@@ -333,6 +421,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (changes.conversationState || changes.activeThreadId) {
             renderConversation(container);
             renderThreadMenu();
+        }
+
+        if (changes.annotations && activeTab === 'annotations') {
+            renderAnnotations();
         }
     });
 
@@ -383,4 +475,33 @@ document.addEventListener('DOMContentLoaded', async () => {
             await setActiveThread(forkAnchor);
         }
     });
+
+    tabConversationBtn.addEventListener('click', () => switchTab('conversation'));
+    tabAnnotationsBtn.addEventListener('click', () => switchTab('annotations'));
+
+    annotationsListEl.addEventListener('click', e => {
+        const card = e.target.closest('[data-annotation-id]');
+        if (!card) return;
+        const id = card.dataset.annotationId;
+        if (selectedAnnotationIds.has(id)) {
+            selectedAnnotationIds.delete(id);
+            card.classList.remove('bg-gray-100', 'border-gray-300');
+            card.classList.add('border-gray-200');
+        } else {
+            selectedAnnotationIds.add(id);
+            card.classList.remove('border-gray-200');
+            card.classList.add('bg-gray-100', 'border-gray-300');
+        }
+        updateAskButton();
+    });
+
+    askBtnEl.addEventListener('click', async () => {
+        if (selectedAnnotationIds.size === 0) return;
+        await chrome.storage.local.set({ pendingAnnotationRefs: [...selectedAnnotationIds] });
+        selectedAnnotationIds.clear();
+        updateAskButton();
+        switchTab('conversation');
+    });
+
+    updateAskButton();
 });

@@ -8,27 +8,47 @@
 </head>
 <body class="flex flex-col h-full overflow-hidden bg-white text-sm">
 
-    <div class="relative flex items-center justify-between border-b border-gray-200 px-3 py-2 shrink-0">
-        <span id="thread-title" class="text-xs font-medium text-gray-600 truncate">Main Conversation</span>
-        <button id="menu-btn" class="ml-2 shrink-0 text-gray-400 hover:text-gray-700 text-base leading-none px-1">⋮</button>
-        <div id="thread-menu" class="hidden absolute top-full right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 min-w-[200px] py-1 max-h-64 overflow-y-auto">
+    <div class="flex shrink-0 border-b border-gray-200">
+        <button id="tab-conversation" class="flex-1 py-2 text-xs font-semibold text-blue-600">Conversation</button>
+        <button id="tab-annotations" class="flex-1 py-2 text-xs text-gray-500 hover:text-gray-700">Annotations</button>
+    </div>
+
+    <div id="conversation-view" class="flex flex-col flex-1 overflow-hidden">
+
+        <div class="relative flex items-center justify-between border-b border-gray-200 px-3 py-2 shrink-0">
+            <span id="thread-title" class="text-xs font-medium text-gray-600 truncate">Main Conversation</span>
+            <button id="menu-btn" class="ml-2 shrink-0 text-gray-400 hover:text-gray-700 text-base leading-none px-1">⋮</button>
+            <div id="thread-menu" class="hidden absolute top-full right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 min-w-[200px] py-1 max-h-64 overflow-y-auto">
+            </div>
         </div>
+
+        <div id="side-panel-content" class="flex-1 overflow-y-auto p-3 space-y-2">
+        </div>
+
+        <div class="flex items-end gap-2 border-t border-gray-200 p-3 shrink-0">
+            <textarea
+                id="user-input"
+                rows="1"
+                placeholder="Ask a question..."
+                class="flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            ></textarea>
+            <button
+                id="send-btn"
+                class="rounded-lg bg-blue-600 px-3 py-2 text-white text-sm font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >Send</button>
+        </div>
+
     </div>
 
-    <div id="side-panel-content" class="flex-1 overflow-y-auto p-3 space-y-2">
-    </div>
+    <div id="annotations-view" style="display:none" class="flex flex-col flex-1 overflow-hidden">
 
-    <div class="flex items-end gap-2 border-t border-gray-200 p-3">
-        <textarea
-            id="user-input"
-            rows="1"
-            placeholder="Ask a question..."
-            class="flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        ></textarea>
-        <button
-            id="send-btn"
-            class="rounded-lg bg-blue-600 px-3 py-2 text-white text-sm font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >Send</button>
+        <div id="annotations-list" class="flex-1 overflow-y-auto p-3 space-y-2">
+        </div>
+
+        <div class="border-t border-gray-200 p-3 shrink-0">
+            <button id="ask-btn" class="w-full rounded-lg bg-blue-600 px-3 py-2 text-white text-sm font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500">Ask</button>
+        </div>
+
     </div>
 
     <script src="sidepanel.js"></script>
