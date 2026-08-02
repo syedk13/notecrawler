@@ -9,8 +9,8 @@
     },
 
     "permissions": ["activeTab", "contextMenus", "sidePanel", "storage"],
-    "host_permissions": ["https://*/*"],
-    
+    "host_permissions": ["https://*/*", "http://localhost:3000/*"],
+
     "content_scripts": [{
         "matches": ["https://*/*"],
         "js": ["content.js"],

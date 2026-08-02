@@ -43,7 +43,7 @@ async function modifySession(updater) {
     await chrome.storage.local.set({ sessions: { ...s, [sid]: updater(s[sid]) } });
 }
 
-// Preserved signature — used by mockResponse and retry handler.
+// Preserved signature — used by generateResponse and retry handler.
 async function modifyState(updater) {
     await modifySession(session => ({
         ...session,
@@ -123,7 +123,7 @@ function reconcilePending(state) {
     for (const msg of state) {
         if (pendingNeedsResponse(state, msg)) {
             inFlight.add(msg.id);
-            mockResponse(msg.id);
+            generateResponse(msg.id);
         }
     }
 }
@@ -300,11 +300,11 @@ function renderThreadMenu() {
     }
 }
 
-// --- Mock response pipeline ---
+// --- Response pipeline ---
+// FORCE_MOCK_FAILURE bypasses the fetch and forces the failed state so the
+// retry UI can be tested without stopping the server.
 
-async function mockResponse(messageId) {
-    await new Promise(resolve => setTimeout(resolve, 600 + Math.random() * 400));
-
+async function generateResponse(messageId) {
     try {
         if (FORCE_MOCK_FAILURE) {
             await modifyState(state =>
@@ -313,18 +313,41 @@ async function mockResponse(messageId) {
             return;
         }
 
+        // Fresh storage read so parent is always found even when called immediately
+        // after submitMessage (before onChanged has synced module-level state).
+        const { sessions: s, activeSessionId: sid } = await readSessions();
+        const parent = ((s[sid] || {}).conversationState || []).find(m => m.id === messageId);
+        if (!parent) return;
+
+        // A highlight's summary references the highlight's OWN id.
+        // A chat reply inherits its parent's contextRef.
+        const responseContextRef = parent.type === 'highlight' ? parent.id : parent.contextRef;
+        const responseType = parent.type === 'highlight' ? 'summary' : 'text';
+
+        let reply;
+        try {
+            const res = await fetch('http://localhost:3000/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sources: [{ content: parent.content, sourceUrl: '', pageTitle: '' }],
+                    prompt: 'summarize',
+                    history: []
+                })
+            });
+            if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+            const data = await res.json();
+            if (typeof data.reply !== 'string') throw new Error('Malformed server response');
+            reply = data.reply;
+        } catch (err) {
+            console.error('NoteCrawler /generate request failed:', err);
+            await modifyState(state =>
+                state.map(msg => msg.id === messageId ? { ...msg, status: 'failed' } : msg)
+            );
+            return;
+        }
+
         await modifyState(state => {
-            const parent = state.find(m => m.id === messageId);
-            if (!parent) return state;
-
-            // A highlight's summary references the highlight's OWN id.
-            // A chat reply inherits its parent's contextRef.
-            const responseContextRef = parent.type === 'highlight'
-                ? parent.id
-                : parent.contextRef;
-
-            const responseType = parent.type === 'highlight' ? 'summary' : 'text';
-
             const updated = state.map(msg =>
                 msg.id === messageId ? { ...msg, status: 'answered' } : msg
             );
@@ -332,7 +355,7 @@ async function mockResponse(messageId) {
                 id: crypto.randomUUID(),
                 role: 'model',
                 type: responseType,
-                content: 'This is a mock response from NoteCrawler.',
+                content: reply,
                 contextRef: responseContextRef,
                 threadId: parent.threadId,
                 replyTo: parent.id,
@@ -371,7 +394,7 @@ async function submitMessage(text) {
             : session.title;
         return { ...session, conversationState: messages, title };
     });
-    mockResponse(messageId);
+    generateResponse(messageId);
 }
 
 // --- Annotations view ---
@@ -552,7 +575,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             await modifyState(messages =>
                 messages.map(msg => msg.id === retryId ? { ...msg, status: 'pending' } : msg)
             );
-            mockResponse(retryId);
+            generateResponse(retryId);
             return;
         }
 
