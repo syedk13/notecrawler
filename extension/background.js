@@ -5,12 +5,36 @@ function openSidePanel(tabId) {
     });
 }
 
-chrome.runtime.onInstalled.addListener(() => {
-    chrome.storage.local.remove(['highlightedHistory', 'lastHighlight', 'threads']);
-    chrome.storage.local.set({
+function createFreshSession() {
+    return {
+        id: crypto.randomUUID(),
+        title: null,
         conversationState: [],
+        annotations: [],
         activeThreadId: 'main',
-        annotations: []
+        createdAt: Date.now()
+    };
+}
+
+async function readActiveSession() {
+    const result = await chrome.storage.local.get(['sessions', 'activeSessionId']);
+    const sessions = result.sessions || {};
+    const activeSessionId = result.activeSessionId || '';
+    return { sessions, activeSessionId, session: sessions[activeSessionId] };
+}
+
+async function modifyActiveSession(updater) {
+    const { sessions, activeSessionId, session } = await readActiveSession();
+    if (!session) return;
+    await chrome.storage.local.set({ sessions: { ...sessions, [activeSessionId]: updater(session) } });
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+    chrome.storage.local.remove(['highlightedHistory', 'lastHighlight', 'threads', 'conversationState', 'activeThreadId', 'annotations']);
+    const session = createFreshSession();
+    chrome.storage.local.set({
+        sessions: { [session.id]: session },
+        activeSessionId: session.id
     });
     chrome.contextMenus.create({
         id: 'ContextMenu',
@@ -28,19 +52,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === 'AddAnnotation' && info.selectionText?.trim()) {
         ;(async () => {
             try {
-                const result = await chrome.storage.local.get('annotations');
-                const annotations = result.annotations || [];
-                annotations.push({
-                    id: crypto.randomUUID(),
-                    content: info.selectionText.trim(),
-                    sourceUrl: tab.url,
-                    pageTitle: tab.title,
-                    timestamp: Date.now()
-                });
-                await chrome.storage.local.set({ annotations });
-            } catch (err) {
-                console.error('Failed to save annotation to storage:', err);
-            }
+                await modifyActiveSession(session => ({
+                    ...session,
+                    annotations: [...(session.annotations || []), {
+                        id: crypto.randomUUID(),
+                        content: info.selectionText.trim(),
+                        sourceUrl: tab.url,
+                        pageTitle: tab.title,
+                        timestamp: Date.now()
+                    }]
+                }));
+            } catch (err) { console.error('Failed to save annotation to storage:', err); }
         })();
     }
 
@@ -48,22 +70,24 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         openSidePanel(tab.id);
         ;(async () => {
             try {
-                const result = await chrome.storage.local.get('conversationState');
-                const state = result.conversationState || [];
-                state.push({
-                    id: crypto.randomUUID(),
-                    role: 'user',
-                    type: 'highlight',
-                    content: info.selectionText.trim(),
-                    contextRef: null,
-                    threadId: 'main',
-                    status: 'pending',
-                    timestamp: Date.now()
+                const text = info.selectionText.trim();
+                await modifyActiveSession(session => {
+                    const messages = [...(session.conversationState || []), {
+                        id: crypto.randomUUID(),
+                        role: 'user',
+                        type: 'highlight',
+                        content: text,
+                        contextRef: null,
+                        threadId: 'main',
+                        status: 'pending',
+                        timestamp: Date.now()
+                    }];
+                    const title = session.title === null
+                        ? (text.length > 40 ? text.slice(0, 40) + '…' : text)
+                        : session.title;
+                    return { ...session, conversationState: messages, title };
                 });
-                await chrome.storage.local.set({ conversationState: state });
-            } catch (err) {
-                console.error('Failed to save highlight to storage:', err);
-            }
+            } catch (err) { console.error('Failed to save highlight to storage:', err); }
         })();
     }
 });

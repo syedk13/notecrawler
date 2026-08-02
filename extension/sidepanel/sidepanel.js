@@ -2,26 +2,70 @@ const FORCE_MOCK_FAILURE = false;
 
 let conversationState = [];
 let activeThreadId = 'main';
+let sessions = {};
+let activeSessionId = '';
 let activeTab = 'conversation';
 const selectedAnnotationIds = new Set();
 
 // --- Storage helpers ---
 
-async function readState() {
-    const result = await chrome.storage.local.get(['conversationState', 'activeThreadId']);
+function createFreshSession() {
     return {
-        conversationState: result.conversationState || [],
-        activeThreadId: result.activeThreadId || 'main'
+        id: crypto.randomUUID(),
+        title: null,
+        conversationState: [],
+        annotations: [],
+        activeThreadId: 'main',
+        createdAt: Date.now()
     };
 }
 
+async function readSessions() {
+    const result = await chrome.storage.local.get(['sessions', 'activeSessionId']);
+    return {
+        sessions: result.sessions || {},
+        activeSessionId: result.activeSessionId || ''
+    };
+}
+
+async function ensureActiveSession() {
+    const { sessions: s, activeSessionId: sid } = await readSessions();
+    if (sid && s[sid]) return { sessions: s, activeSessionId: sid };
+    const session = createFreshSession();
+    const newSessions = { ...s, [session.id]: session };
+    await chrome.storage.local.set({ sessions: newSessions, activeSessionId: session.id });
+    return { sessions: newSessions, activeSessionId: session.id };
+}
+
+async function modifySession(updater) {
+    const { sessions: s, activeSessionId: sid } = await readSessions();
+    if (!s[sid]) return;
+    await chrome.storage.local.set({ sessions: { ...s, [sid]: updater(s[sid]) } });
+}
+
+// Preserved signature — used by mockResponse and retry handler.
 async function modifyState(updater) {
-    const { conversationState: current } = await readState();
-    await chrome.storage.local.set({ conversationState: updater(current) });
+    await modifySession(session => ({
+        ...session,
+        conversationState: updater(session.conversationState || [])
+    }));
 }
 
 async function setActiveThread(threadId) {
-    await chrome.storage.local.set({ activeThreadId: threadId });
+    await modifySession(session => ({ ...session, activeThreadId: threadId }));
+}
+
+async function setActiveSession(sessionId) {
+    await chrome.storage.local.set({ activeSessionId: sessionId });
+}
+
+async function startNewSession() {
+    const { sessions: s } = await readSessions();
+    const session = createFreshSession();
+    await chrome.storage.local.set({
+        sessions: { ...s, [session.id]: session },
+        activeSessionId: session.id
+    });
 }
 
 // --- View filter ---
@@ -198,6 +242,18 @@ function renderConversation(container) {
     container.scrollTop = container.scrollHeight;
 }
 
+function createSessionMenuItem(sessionId, label) {
+    const btn = document.createElement('button');
+    btn.classList.add(
+        'w-full', 'text-left', 'px-3', 'py-1.5', 'text-xs',
+        'hover:bg-gray-50', 'text-gray-700', 'truncate'
+    );
+    if (sessionId === activeSessionId) btn.classList.add('font-semibold', 'text-blue-600');
+    btn.textContent = label;
+    btn.dataset.sessionId = sessionId;
+    return btn;
+}
+
 function createThreadMenuItem(threadId, label, isChild) {
     const btn = document.createElement('button');
     btn.classList.add(
@@ -206,7 +262,8 @@ function createThreadMenuItem(threadId, label, isChild) {
     );
     if (isChild) btn.classList.add('pl-6');
     if (threadId === activeThreadId) btn.classList.add('font-semibold', 'text-blue-600');
-    btn.textContent = (isChild ? '↳ ' : '') + label;
+    // 'main' never gets ↳ even when indented under a session entry
+    btn.textContent = (isChild && threadId !== 'main' ? '↳ ' : '') + label;
     btn.dataset.threadId = threadId;
     return btn;
 }
@@ -218,15 +275,28 @@ function renderThreadMenu() {
 
     menu.innerHTML = '';
 
-    const threadIds = getDerivedThreadIds();
-    menu.appendChild(createThreadMenuItem('main', 'Main Conversation', false));
-    for (const id of threadIds) {
-        if (id === 'main') continue;
-        menu.appendChild(createThreadMenuItem(id, getThreadLabel(id), true));
+    // Sessions at top level (only titled sessions appear)
+    const sortedSessions = Object.values(sessions)
+        .filter(s => s.title !== null)
+        .sort((a, b) => a.createdAt - b.createdAt);
+
+    for (const session of sortedSessions) {
+        menu.appendChild(createSessionMenuItem(session.id, session.title));
+
+        // Indented threads appear only under the active session
+        if (session.id === activeSessionId) {
+            menu.appendChild(createThreadMenuItem('main', 'Main Conversation', true));
+            const threadIds = getDerivedThreadIds();
+            for (const id of threadIds) {
+                if (id === 'main') continue;
+                menu.appendChild(createThreadMenuItem(id, getThreadLabel(id), true));
+            }
+        }
     }
 
     if (titleEl) {
-        titleEl.textContent = getThreadLabel(activeThreadId);
+        const activeSession = sessions[activeSessionId];
+        titleEl.textContent = activeSession?.title || getThreadLabel(activeThreadId);
     }
 }
 
@@ -283,16 +353,24 @@ async function submitMessage(text) {
     const contextRef = capturedThreadId === 'main' ? null : capturedThreadId;
 
     inFlight.add(messageId);
-    await modifyState(messages => [...messages, {
-        id: messageId,
-        role: 'user',
-        type: 'text',
-        content: text,
-        contextRef,
-        threadId: capturedThreadId,
-        status: 'pending',
-        timestamp: Date.now()
-    }]);
+    // Use modifySession directly so we can set the session title alongside the message.
+    await modifySession(session => {
+        const messages = [...(session.conversationState || []), {
+            id: messageId,
+            role: 'user',
+            type: 'text',
+            content: text,
+            contextRef,
+            threadId: capturedThreadId,
+            status: 'pending',
+            timestamp: Date.now()
+        }];
+        const trimmed = text.trim();
+        const title = session.title === null
+            ? (trimmed.length > 40 ? trimmed.slice(0, 40) + '…' : trimmed)
+            : session.title;
+        return { ...session, conversationState: messages, title };
+    });
     mockResponse(messageId);
 }
 
@@ -307,12 +385,12 @@ function updateAskButton() {
     askBtn.style.cursor = hasSelection ? '' : 'not-allowed';
 }
 
-async function renderAnnotations() {
+function renderAnnotations() {
     const list = document.getElementById('annotations-list');
     if (!list) return;
 
-    const result = await chrome.storage.local.get('annotations');
-    const annotations = (result.annotations || []).slice().sort((a, b) => b.timestamp - a.timestamp);
+    const session = sessions[activeSessionId] || {};
+    const annotations = (session.annotations || []).slice().sort((a, b) => b.timestamp - a.timestamp);
 
     list.innerHTML = '';
 
@@ -395,10 +473,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tabAnnotationsBtn = document.getElementById('tab-annotations');
     const annotationsListEl = document.getElementById('annotations-list');
     const askBtnEl = document.getElementById('ask-btn');
+    const newChatBtn = document.getElementById('new-chat-btn');
 
-    const stored = await readState();
-    conversationState = stored.conversationState;
-    activeThreadId = stored.activeThreadId;
+    const init = await ensureActiveSession();
+    sessions = init.sessions;
+    activeSessionId = init.activeSessionId;
+    const initSession = sessions[activeSessionId] || {};
+    conversationState = initSession.conversationState || [];
+    activeThreadId = initSession.activeThreadId || 'main';
     renderConversation(container);
     renderThreadMenu();
 
@@ -409,22 +491,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
 
-        if (changes.activeThreadId) {
-            activeThreadId = changes.activeThreadId.newValue || 'main';
+        if (changes.sessions) {
+            sessions = changes.sessions.newValue || {};
+        }
+        if (changes.activeSessionId) {
+            activeSessionId = changes.activeSessionId.newValue || '';
         }
 
-        if (changes.conversationState) {
-            conversationState = changes.conversationState.newValue || [];
+        if (changes.sessions || changes.activeSessionId) {
+            const session = sessions[activeSessionId] || {};
+            conversationState = session.conversationState || [];
+            activeThreadId = session.activeThreadId || 'main';
             reconcilePending(conversationState);
-        }
-
-        if (changes.conversationState || changes.activeThreadId) {
             renderConversation(container);
             renderThreadMenu();
-        }
-
-        if (changes.annotations && activeTab === 'annotations') {
-            renderAnnotations();
+            if (activeTab === 'annotations') renderAnnotations();
         }
     });
 
@@ -454,6 +535,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     threadMenu.addEventListener('click', async e => {
+        const sessionId = e.target.dataset.sessionId;
+        if (sessionId) {
+            await setActiveSession(sessionId);
+            return;
+        }
         const threadId = e.target.dataset.threadId;
         if (!threadId) return;
         await setActiveThread(threadId);
@@ -501,6 +587,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         selectedAnnotationIds.clear();
         updateAskButton();
         switchTab('conversation');
+    });
+
+    newChatBtn.addEventListener('click', async () => {
+        await startNewSession();
+        selectedAnnotationIds.clear();
+        updateAskButton();
+        if (activeTab !== 'conversation') switchTab('conversation');
     });
 
     updateAskButton();
