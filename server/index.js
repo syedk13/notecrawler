@@ -78,6 +78,7 @@ function buildContents(sources, prompt, history) {
 }
 
 app.post('/generate', async (req, res) => {
+    console.log('Received request at /generate');
     try {
         const { sources = [], prompt = '', history = [] } = req.body;
         const contents = buildContents(sources, prompt, history);
