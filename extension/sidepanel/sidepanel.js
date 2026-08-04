@@ -5,6 +5,7 @@ let activeThreadId = 'main';
 let sessions = {};
 let activeSessionId = '';
 let activeTab = 'conversation';
+let pendingAnnotationRefs = [];
 const selectedAnnotationIds = new Set();
 
 // --- Storage helpers ---
@@ -168,11 +169,12 @@ function createLoadingIndicator() {
 function createChatBubble(message) {
     const isUser = message.role === 'user';
     const isFailed = isUser && message.status === 'failed';
+    const hasRefs = isUser && message.annotationRefs && message.annotationRefs.length > 0;
 
     const wrapper = document.createElement('div');
     if (!isUser) {
         wrapper.classList.add('flex', 'flex-col', 'items-start', 'gap-0.5');
-    } else if (isFailed) {
+    } else if (isFailed || hasRefs) {
         wrapper.classList.add('flex', 'flex-col', 'items-end', 'gap-1');
     } else {
         wrapper.classList.add('flex', 'justify-end');
@@ -203,6 +205,23 @@ function createChatBubble(message) {
         forkBtn.dataset.forkAnchor = message.contextRef;
         forkBtn.classList.add('text-xs', 'text-blue-400', 'hover:underline');
         wrapper.appendChild(forkBtn);
+    }
+
+    // Collapsed reference toggle for synthesis messages.
+    if (hasRefs) {
+        const count = message.annotationRefs.length;
+        const refToggle = document.createElement('button');
+        refToggle.textContent = `Using ${count} annotation${count !== 1 ? 's' : ''} ▸`;
+        refToggle.dataset.toggleRefs = message.id;
+        refToggle.classList.add('text-xs', 'text-blue-400', 'hover:underline');
+        wrapper.appendChild(refToggle);
+
+        // Hidden container for the expanded ref list, rendered on first open.
+        const refsExpanded = document.createElement('div');
+        refsExpanded.id = `refs-${message.id}`;
+        refsExpanded.style.display = 'none';
+        refsExpanded.classList.add('flex', 'flex-col', 'items-end', 'gap-1');
+        wrapper.appendChild(refsExpanded);
     }
 
     return wrapper;
@@ -240,6 +259,53 @@ function renderConversation(container) {
     }
 
     container.scrollTop = container.scrollHeight;
+}
+
+function renderContextCard() {
+    const card = document.getElementById('context-card');
+    if (!card) return;
+
+    if (pendingAnnotationRefs.length === 0) {
+        card.style.display = 'none';
+        return;
+    }
+
+    card.style.display = '';
+    card.innerHTML = '';
+
+    const session = sessions[activeSessionId] || {};
+    const annotations = session.annotations || [];
+
+    const header = document.createElement('div');
+    header.classList.add('flex', 'items-center', 'justify-between');
+
+    const label = document.createElement('span');
+    label.classList.add('text-xs', 'font-medium', 'text-gray-600');
+    const n = pendingAnnotationRefs.length;
+    label.textContent = `${n} annotation${n !== 1 ? 's' : ''} staged`;
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.id = 'dismiss-context-card';
+    dismissBtn.textContent = '×';
+    dismissBtn.classList.add('text-gray-400', 'hover:text-gray-700', 'text-base', 'leading-none', 'px-1');
+
+    header.appendChild(label);
+    header.appendChild(dismissBtn);
+    card.appendChild(header);
+
+    for (const id of pendingAnnotationRefs) {
+        const ann = annotations.find(a => a.id === id);
+        const row = document.createElement('p');
+        row.classList.add('text-xs', 'text-gray-500', 'truncate', 'mt-1');
+        if (ann) {
+            const excerpt = ann.content.length > 40 ? ann.content.slice(0, 40) + '…' : ann.content;
+            row.textContent = ann.pageTitle ? `${ann.pageTitle} — ${excerpt}` : excerpt;
+        } else {
+            row.textContent = '(annotation removed)';
+            row.classList.add('italic');
+        }
+        card.appendChild(row);
+    }
 }
 
 function createSessionMenuItem(sessionId, label) {
@@ -316,7 +382,8 @@ async function generateResponse(messageId) {
         // Fresh storage read so parent is always found even when called immediately
         // after submitMessage (before onChanged has synced module-level state).
         const { sessions: s, activeSessionId: sid } = await readSessions();
-        const parent = ((s[sid] || {}).conversationState || []).find(m => m.id === messageId);
+        const sessionData = s[sid] || {};
+        const parent = (sessionData.conversationState || []).find(m => m.id === messageId);
         if (!parent) return;
 
         // A highlight's summary references the highlight's OWN id.
@@ -324,16 +391,31 @@ async function generateResponse(messageId) {
         const responseContextRef = parent.type === 'highlight' ? parent.id : parent.contextRef;
         const responseType = parent.type === 'highlight' ? 'summary' : 'text';
 
+        // Build sources: synthesis messages carry annotationRefs on the parent.
+        let sources;
+        let prompt;
+        if (parent.annotationRefs && parent.annotationRefs.length > 0) {
+            const sessionAnnotations = sessionData.annotations || [];
+            sources = parent.annotationRefs
+                .map(id => sessionAnnotations.find(a => a.id === id))
+                .filter(Boolean)
+                .map(a => ({ content: a.content, sourceUrl: a.sourceUrl || '', pageTitle: a.pageTitle || '' }));
+            if (sources.length === 0) {
+                // All referenced annotations were removed; fall back to message content.
+                sources = [{ content: parent.content, sourceUrl: '', pageTitle: '' }];
+            }
+            prompt = parent.content;
+        } else {
+            sources = [{ content: parent.content, sourceUrl: '', pageTitle: '' }];
+            prompt = 'summarize';
+        }
+
         let reply;
         try {
             const res = await fetch('http://localhost:3000/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    sources: [{ content: parent.content, sourceUrl: '', pageTitle: '' }],
-                    prompt: 'summarize',
-                    history: []
-                })
+                body: JSON.stringify({ sources, prompt, history: [] })
             });
             if (!res.ok) throw new Error(`Server responded with ${res.status}`);
             const data = await res.json();
@@ -374,11 +456,13 @@ async function submitMessage(text) {
     const messageId = crypto.randomUUID();
     const capturedThreadId = activeThreadId;
     const contextRef = capturedThreadId === 'main' ? null : capturedThreadId;
+    // Snapshot staged refs so the write and the clear are based on the same list.
+    const capturedRefs = [...pendingAnnotationRefs];
 
     inFlight.add(messageId);
     // Use modifySession directly so we can set the session title alongside the message.
     await modifySession(session => {
-        const messages = [...(session.conversationState || []), {
+        const message = {
             id: messageId,
             role: 'user',
             type: 'text',
@@ -387,13 +471,22 @@ async function submitMessage(text) {
             threadId: capturedThreadId,
             status: 'pending',
             timestamp: Date.now()
-        }];
+        };
+        if (capturedRefs.length > 0) {
+            message.annotationRefs = capturedRefs;
+        }
+        const messages = [...(session.conversationState || []), message];
         const trimmed = text.trim();
         const title = session.title === null
             ? (trimmed.length > 40 ? trimmed.slice(0, 40) + '…' : trimmed)
             : session.title;
         return { ...session, conversationState: messages, title };
     });
+
+    if (capturedRefs.length > 0) {
+        await chrome.storage.local.set({ pendingAnnotationRefs: [] });
+    }
+
     generateResponse(messageId);
 }
 
@@ -492,6 +585,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const sendBtn = document.getElementById('send-btn');
     const menuBtn = document.getElementById('menu-btn');
     const threadMenu = document.getElementById('thread-menu');
+    const contextCard = document.getElementById('context-card');
     const tabConversationBtn = document.getElementById('tab-conversation');
     const tabAnnotationsBtn = document.getElementById('tab-annotations');
     const annotationsListEl = document.getElementById('annotations-list');
@@ -504,8 +598,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const initSession = sessions[activeSessionId] || {};
     conversationState = initSession.conversationState || [];
     activeThreadId = initSession.activeThreadId || 'main';
+
+    // Load any refs that were staged before the panel opened.
+    const refsResult = await chrome.storage.local.get('pendingAnnotationRefs');
+    pendingAnnotationRefs = refsResult.pendingAnnotationRefs || [];
+
     renderConversation(container);
     renderThreadMenu();
+    renderContextCard();
 
     // Trigger responses for any pending messages that arrived while the panel
     // was closed (e.g. a context-menu highlight). Idempotent.
@@ -519,6 +619,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         if (changes.activeSessionId) {
             activeSessionId = changes.activeSessionId.newValue || '';
+        }
+        if (changes.pendingAnnotationRefs) {
+            pendingAnnotationRefs = changes.pendingAnnotationRefs.newValue || [];
+            renderContextCard();
         }
 
         if (changes.sessions || changes.activeSessionId) {
@@ -568,6 +672,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         await setActiveThread(threadId);
     });
 
+    contextCard.addEventListener('click', async e => {
+        if (e.target.id === 'dismiss-context-card') {
+            await chrome.storage.local.set({ pendingAnnotationRefs: [] });
+        }
+    });
+
     container.addEventListener('click', async e => {
         const retryId = e.target.dataset.retryId;
         if (retryId) {
@@ -582,6 +692,50 @@ document.addEventListener('DOMContentLoaded', async () => {
         const forkAnchor = e.target.dataset.forkAnchor;
         if (forkAnchor) {
             await setActiveThread(forkAnchor);
+            return;
+        }
+
+        const toggleRefs = e.target.dataset.toggleRefs;
+        if (toggleRefs) {
+            const refsEl = document.getElementById(`refs-${toggleRefs}`);
+            if (!refsEl) return;
+
+            const msg = conversationState.find(m => m.id === toggleRefs);
+            const count = msg?.annotationRefs?.length || 0;
+            const label = `Using ${count} annotation${count !== 1 ? 's' : ''}`;
+            const isExpanded = refsEl.style.display !== 'none';
+
+            if (isExpanded) {
+                refsEl.style.display = 'none';
+                e.target.textContent = `${label} ▸`;
+                return;
+            }
+
+            // Render on first expand (and re-render on subsequent to pick up any removed annotations).
+            refsEl.innerHTML = '';
+            const session = sessions[activeSessionId] || {};
+            const annotations = session.annotations || [];
+
+            for (const id of (msg?.annotationRefs || [])) {
+                const ann = annotations.find(a => a.id === id);
+                const row = document.createElement('div');
+                row.classList.add(
+                    'rounded-lg', 'border', 'border-gray-200',
+                    'px-3', 'py-1.5', 'text-xs', 'text-gray-600', 'max-w-[85%]'
+                );
+                if (ann) {
+                    const excerpt = ann.content.length > 40 ? ann.content.slice(0, 40) + '…' : ann.content;
+                    row.textContent = ann.pageTitle ? `${ann.pageTitle} — ${excerpt}` : excerpt;
+                } else {
+                    row.textContent = '(annotation removed)';
+                    row.classList.add('italic', 'text-gray-400');
+                }
+                refsEl.appendChild(row);
+            }
+
+            refsEl.style.display = '';
+            e.target.textContent = `${label} ▾`;
+            return;
         }
     });
 
