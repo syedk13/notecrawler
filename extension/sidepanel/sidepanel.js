@@ -391,23 +391,37 @@ async function generateResponse(messageId) {
         const responseContextRef = parent.type === 'highlight' ? parent.id : parent.contextRef;
         const responseType = parent.type === 'highlight' ? 'summary' : 'text';
 
-        // Build sources: synthesis messages carry annotationRefs on the parent.
+        // Build sources and prompt for three distinct cases.
         let sources;
         let prompt;
-        if (parent.annotationRefs && parent.annotationRefs.length > 0) {
+        if (parent.type === 'highlight') {
+            // Case 1: automatic highlight summary.
+            sources = [{ content: parent.content, sourceUrl: '', pageTitle: '' }];
+            prompt = 'summarize';
+        } else if (parent.annotationRefs && parent.annotationRefs.length > 0) {
+            // Case 2: cross-source synthesis — question asked over staged annotations.
             const sessionAnnotations = sessionData.annotations || [];
             sources = parent.annotationRefs
                 .map(id => sessionAnnotations.find(a => a.id === id))
                 .filter(Boolean)
                 .map(a => ({ content: a.content, sourceUrl: a.sourceUrl || '', pageTitle: a.pageTitle || '' }));
             if (sources.length === 0) {
-                // All referenced annotations were removed; fall back to message content.
-                sources = [{ content: parent.content, sourceUrl: '', pageTitle: '' }];
+                // All referenced annotations were removed; send empty sources so the
+                // model still attempts to answer from the question alone.
+                sources = [];
             }
             prompt = parent.content;
         } else {
-            sources = [{ content: parent.content, sourceUrl: '', pageTitle: '' }];
-            prompt = 'summarize';
+            // Case 3: plain typed question, optionally in a fork with an anchor highlight.
+            prompt = parent.content;
+            if (parent.contextRef) {
+                const anchor = (sessionData.conversationState || []).find(m => m.id === parent.contextRef);
+                sources = anchor
+                    ? [{ content: anchor.content, sourceUrl: '', pageTitle: '' }]
+                    : [];
+            } else {
+                sources = [];
+            }
         }
 
         let reply;
