@@ -136,9 +136,17 @@ function createHighlightCard(message) {
     wrapper.dataset.id = message.id;
 
     const card = document.createElement('div');
-    card.classList.add('highlight-item');
+    card.classList.add('highlight-item', 'line-clamp-5');
+    card.dataset.expandContent = message.id;
     card.textContent = message.content;
     wrapper.appendChild(card);
+
+    const moreBtn = document.createElement('button');
+    moreBtn.textContent = 'more';
+    moreBtn.dataset.expandToggle = message.id;
+    moreBtn.style.display = 'none';
+    moreBtn.classList.add('text-xs', 'text-blue-400', 'hover:underline', 'block', 'mt-1');
+    wrapper.appendChild(moreBtn);
 
     if (message.status === 'failed') {
         const retryBtn = document.createElement('button');
@@ -248,6 +256,13 @@ function renderConversation(container) {
             ? createHighlightCard(message)
             : createChatBubble(message);
         container.appendChild(el);
+
+        // Reveal "more" toggle for clamped highlight cards that actually overflow.
+        const clampedText = el.querySelector('[data-expand-content]');
+        const moreBtn = el.querySelector('[data-expand-toggle]');
+        if (clampedText && moreBtn && clampedText.scrollHeight > clampedText.clientHeight) {
+            moreBtn.style.display = '';
+        }
 
         // Show the loading indicator for a pending message that has no response yet.
         const awaitingResponse = message.role === 'user'
@@ -546,8 +561,15 @@ function renderAnnotations() {
         card.style.cursor = 'pointer';
 
         const content = document.createElement('p');
-        content.classList.add('text-sm', 'text-gray-800');
+        content.classList.add('text-sm', 'text-gray-800', 'line-clamp-5');
+        content.dataset.expandContent = ann.id;
         content.textContent = ann.content;
+
+        const moreBtn = document.createElement('button');
+        moreBtn.textContent = 'more';
+        moreBtn.dataset.expandToggle = ann.id;
+        moreBtn.style.display = 'none';
+        moreBtn.classList.add('text-xs', 'text-blue-400', 'hover:underline', 'block', 'mt-1');
 
         const meta = document.createElement('p');
         meta.classList.add('text-xs', 'text-gray-400', 'mt-1');
@@ -555,8 +577,14 @@ function renderAnnotations() {
         meta.textContent = `${ann.pageTitle} · ${truncUrl}`;
 
         card.appendChild(content);
+        card.appendChild(moreBtn);
         card.appendChild(meta);
         list.appendChild(card);
+
+        // Reveal "more" toggle only if the clamped text actually overflows.
+        if (content.scrollHeight > content.clientHeight) {
+            moreBtn.style.display = '';
+        }
     }
 }
 
@@ -709,6 +737,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
+        const expandToggle = e.target.dataset.expandToggle;
+        if (expandToggle) {
+            const textEl = document.querySelector(`[data-expand-content="${expandToggle}"]`);
+            if (!textEl) return;
+            const isExpanded = !textEl.classList.contains('line-clamp-5');
+            if (isExpanded) {
+                textEl.classList.add('line-clamp-5');
+                e.target.textContent = 'more';
+            } else {
+                textEl.classList.remove('line-clamp-5');
+                e.target.textContent = 'less';
+            }
+            return;
+        }
+
         const toggleRefs = e.target.dataset.toggleRefs;
         if (toggleRefs) {
             const refsEl = document.getElementById(`refs-${toggleRefs}`);
@@ -757,6 +800,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     tabAnnotationsBtn.addEventListener('click', () => switchTab('annotations'));
 
     annotationsListEl.addEventListener('click', e => {
+        // Expand toggle must not trigger selection — handle it first and bail.
+        const expandToggle = e.target.dataset.expandToggle;
+        if (expandToggle) {
+            const textEl = document.querySelector(`[data-expand-content="${expandToggle}"]`);
+            if (!textEl) return;
+            const isExpanded = !textEl.classList.contains('line-clamp-5');
+            if (isExpanded) {
+                textEl.classList.add('line-clamp-5');
+                e.target.textContent = 'more';
+            } else {
+                textEl.classList.remove('line-clamp-5');
+                e.target.textContent = 'less';
+            }
+            return;
+        }
+
         const card = e.target.closest('[data-annotation-id]');
         if (!card) return;
         const id = card.dataset.annotationId;
