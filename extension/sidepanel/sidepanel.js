@@ -17,6 +17,7 @@ function createFreshSession() {
         conversationState: [],
         annotations: [],
         activeThreadId: 'main',
+        tabIds: [],
         createdAt: Date.now()
     };
 }
@@ -66,6 +67,30 @@ async function startNewSession() {
     await chrome.storage.local.set({
         sessions: { ...s, [session.id]: session },
         activeSessionId: session.id
+    });
+}
+
+// Ask the background service worker for the active tab id.
+// chrome.tabs.getCurrent() returns undefined in side-panel contexts.
+async function getCurrentTabId() {
+    return new Promise(resolve => {
+        chrome.runtime.sendMessage({ type: 'GET_CURRENT_TAB' }, response => {
+            if (chrome.runtime.lastError) { resolve(null); return; }
+            resolve(response?.tabId ?? null);
+        });
+    });
+}
+
+// Add tabId to a specific session's tabIds (no-op if already present or tabId is null).
+async function addTabToSession(sessionId, tabId) {
+    if (tabId == null) return;
+    const { sessions: s } = await readSessions();
+    const session = s[sessionId];
+    if (!session) return;
+    const tabIds = session.tabIds || [];
+    if (tabIds.includes(tabId)) return;
+    await chrome.storage.local.set({
+        sessions: { ...s, [sessionId]: { ...session, tabIds: [...tabIds, tabId] } }
     });
 }
 
@@ -276,49 +301,78 @@ function renderConversation(container) {
     container.scrollTop = container.scrollHeight;
 }
 
-function renderContextCard() {
+async function renderContextCard() {
     const card = document.getElementById('context-card');
     if (!card) return;
-
-    if (pendingAnnotationRefs.length === 0) {
-        card.style.display = 'none';
-        return;
-    }
 
     card.style.display = '';
     card.innerHTML = '';
 
+    // Priority 1: annotations staged card.
+    if (pendingAnnotationRefs.length > 0) {
+        const session = sessions[activeSessionId] || {};
+        const annotations = session.annotations || [];
+
+        const header = document.createElement('div');
+        header.classList.add('flex', 'items-center', 'justify-between');
+
+        const label = document.createElement('span');
+        label.classList.add('text-xs', 'font-medium', 'text-gray-600');
+        const n = pendingAnnotationRefs.length;
+        label.textContent = `${n} annotation${n !== 1 ? 's' : ''} staged`;
+
+        const dismissBtn = document.createElement('button');
+        dismissBtn.id = 'dismiss-context-card';
+        dismissBtn.textContent = '×';
+        dismissBtn.classList.add('text-gray-400', 'hover:text-gray-700', 'text-base', 'leading-none', 'px-1');
+
+        header.appendChild(label);
+        header.appendChild(dismissBtn);
+        card.appendChild(header);
+
+        for (const id of pendingAnnotationRefs) {
+            const ann = annotations.find(a => a.id === id);
+            const row = document.createElement('p');
+            row.classList.add('text-xs', 'text-gray-500', 'truncate', 'mt-1');
+            if (ann) {
+                const excerpt = ann.content.length > 40 ? ann.content.slice(0, 40) + '…' : ann.content;
+                row.textContent = ann.pageTitle ? `${ann.pageTitle} — ${excerpt}` : excerpt;
+            } else {
+                row.textContent = '(annotation removed)';
+                row.classList.add('italic');
+            }
+            card.appendChild(row);
+        }
+        return;
+    }
+
+    // Priority 2: tab-tracking indicator (display-only).
     const session = sessions[activeSessionId] || {};
-    const annotations = session.annotations || [];
+    const tabIds = session.tabIds || [];
 
     const header = document.createElement('div');
     header.classList.add('flex', 'items-center', 'justify-between');
 
     const label = document.createElement('span');
     label.classList.add('text-xs', 'font-medium', 'text-gray-600');
-    const n = pendingAnnotationRefs.length;
-    label.textContent = `${n} annotation${n !== 1 ? 's' : ''} staged`;
-
-    const dismissBtn = document.createElement('button');
-    dismissBtn.id = 'dismiss-context-card';
-    dismissBtn.textContent = '×';
-    dismissBtn.classList.add('text-gray-400', 'hover:text-gray-700', 'text-base', 'leading-none', 'px-1');
+    const n = tabIds.length;
+    label.textContent = `${n} tab${n !== 1 ? 's' : ''} in scope`;
 
     header.appendChild(label);
-    header.appendChild(dismissBtn);
     card.appendChild(header);
 
-    for (const id of pendingAnnotationRefs) {
-        const ann = annotations.find(a => a.id === id);
+    for (const tabId of tabIds) {
+        // tab.title requires the "tabs" manifest permission; falls back to id-based label.
+        let title = '';
+        try {
+            const tab = await chrome.tabs.get(tabId);
+            title = tab.title || '';
+        } catch {
+            // Tab closed but not yet pruned — show neutral fallback.
+        }
         const row = document.createElement('p');
         row.classList.add('text-xs', 'text-gray-500', 'truncate', 'mt-1');
-        if (ann) {
-            const excerpt = ann.content.length > 40 ? ann.content.slice(0, 40) + '…' : ann.content;
-            row.textContent = ann.pageTitle ? `${ann.pageTitle} — ${excerpt}` : excerpt;
-        } else {
-            row.textContent = '(annotation removed)';
-            row.classList.add('italic');
-        }
+        row.textContent = title || `Tab ${tabId}`;
         card.appendChild(row);
     }
 }
@@ -637,6 +691,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const init = await ensureActiveSession();
     sessions = init.sessions;
     activeSessionId = init.activeSessionId;
+
+    // Auto-associate this tab with the active session on open.
+    const openingTabId = await getCurrentTabId();
+    await addTabToSession(activeSessionId, openingTabId);
+    // Refresh so the initial render reflects the newly joined tab.
+    const refreshed = await readSessions();
+    sessions = refreshed.sessions;
+
     const initSession = sessions[activeSessionId] || {};
     conversationState = initSession.conversationState || [];
     activeThreadId = initSession.activeThreadId || 'main';
@@ -674,6 +736,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             reconcilePending(conversationState);
             renderConversation(container);
             renderThreadMenu();
+            renderContextCard();
             if (activeTab === 'annotations') renderAnnotations();
         }
     });
@@ -707,6 +770,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const sessionId = e.target.dataset.sessionId;
         if (sessionId) {
             await setActiveSession(sessionId);
+            // Also join this tab to the selected session so it appears in scope.
+            const tabId = await getCurrentTabId();
+            await addTabToSession(sessionId, tabId);
             return;
         }
         const threadId = e.target.dataset.threadId;

@@ -12,6 +12,7 @@ function createFreshSession() {
         conversationState: [],
         annotations: [],
         activeThreadId: 'main',
+        tabIds: [],
         createdAt: Date.now()
     };
 }
@@ -94,4 +95,35 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 chrome.action.onClicked.addListener((tab) => {
     openSidePanel(tab.id);
+});
+
+// Remove a closed tab from every session's tabIds list.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+    const result = await chrome.storage.local.get('sessions');
+    const allSessions = result.sessions || {};
+    let modified = false;
+    const updated = {};
+    for (const [id, session] of Object.entries(allSessions)) {
+        const ids = session.tabIds || [];
+        if (ids.includes(tabId)) {
+            updated[id] = { ...session, tabIds: ids.filter(t => t !== tabId) };
+            modified = true;
+        } else {
+            updated[id] = session;
+        }
+    }
+    if (modified) {
+        await chrome.storage.local.set({ sessions: updated });
+    }
+});
+
+// Let the side panel resolve the active tab id via the background, because
+// chrome.tabs.getCurrent() returns undefined in side-panel contexts.
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === 'GET_CURRENT_TAB') {
+        chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+            sendResponse({ tabId: tabs[0]?.id ?? null });
+        });
+        return true; // keep channel open for async sendResponse
+    }
 });
