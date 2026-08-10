@@ -44,7 +44,7 @@ chrome.runtime.onInstalled.addListener(() => {
     });
     chrome.contextMenus.create({
         id: 'AddAnnotation',
-        title: 'Add annotation',
+        title: 'Add Annotation',
         contexts: ['selection']
     });
 });
@@ -124,6 +124,36 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
             sendResponse({ tabId: tabs[0]?.id ?? null });
         });
+        return true; // keep channel open for async sendResponse
+    }
+
+    if (message.type === 'READ_SESSION_TABS') {
+        const tabIds = message.tabIds || [];
+        ;(async () => {
+            const results = [];
+            for (const tabId of tabIds) {
+                try {
+                    const [{ result: extracted }] = await chrome.scripting.executeScript({
+                        target: { tabId },
+                        func: () => {
+                            const root = document.querySelector('main, article') || document.body;
+                            const raw = root.innerText || '';
+                            // Collapse runs of whitespace-only lines down to a single blank line.
+                            const collapsed = raw.replace(/(\s*\n){3,}/g, '\n\n').trim();
+                            return {
+                                content: collapsed.slice(0, 20000),
+                                sourceUrl: document.location.href,
+                                pageTitle: document.title
+                            };
+                        }
+                    });
+                    results.push({ tabId, ...extracted });
+                } catch {
+                    // Restricted page (chrome://, about:, pdf, etc.) or tab already closed — skip.
+                }
+            }
+            sendResponse(results);
+        })();
         return true; // keep channel open for async sendResponse
     }
 });
