@@ -464,7 +464,7 @@ async function generateResponse(messageId) {
         let sources;
         let prompt;
         if (parent.type === 'highlight') {
-            // Case 1: automatic highlight summary.
+            // Case 1: automatic highlight summary — no tab content.
             sources = [{ content: parent.content, sourceUrl: '', pageTitle: '' }];
             prompt = 'summarize';
         } else if (parent.annotationRefs && parent.annotationRefs.length > 0) {
@@ -490,6 +490,32 @@ async function generateResponse(messageId) {
                     : [];
             } else {
                 sources = [];
+            }
+        }
+
+        // Supplement Cases 2 & 3 with live content from the session's in-scope tabs.
+        // The highlight-summarize path is excluded — it must not gather tab content.
+        if (parent.type !== 'highlight') {
+            const tabIds = sessionData.tabIds || [];
+            if (tabIds.length > 0) {
+                try {
+                    const tabResults = await new Promise(resolve => {
+                        chrome.runtime.sendMessage({ type: 'READ_SESSION_TABS', tabIds }, results => {
+                            if (chrome.runtime.lastError) { resolve([]); return; }
+                            resolve(Array.isArray(results) ? results : []);
+                        });
+                    });
+                    // Merge, deduplicating by sourceUrl (empty URLs are not considered duplicates).
+                    const seenUrls = new Set(sources.map(s => s.sourceUrl).filter(Boolean));
+                    for (const { content, sourceUrl, pageTitle } of tabResults) {
+                        if (!sourceUrl || !seenUrls.has(sourceUrl)) {
+                            sources.push({ content, sourceUrl, pageTitle });
+                            if (sourceUrl) seenUrls.add(sourceUrl);
+                        }
+                    }
+                } catch {
+                    // Tab content is additive context — a failure here never blocks the request.
+                }
             }
         }
 
