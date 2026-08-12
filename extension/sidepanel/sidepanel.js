@@ -159,25 +159,31 @@ function reconcilePending(state) {
 function createHighlightCard(message) {
     const wrapper = document.createElement('div');
     wrapper.dataset.id = message.id;
+    wrapper.classList.add('flex', 'flex-col', 'items-start', 'gap-0.5');
 
-    const card = document.createElement('div');
-    card.classList.add('highlight-item', 'line-clamp-5');
-    card.dataset.expandContent = message.id;
-    card.textContent = message.content;
-    wrapper.appendChild(card);
+    const bubble = document.createElement('div');
+    bubble.classList.add('nc-bubble-highlight', 'max-w-[85%]', 'px-3', 'py-2', 'text-sm');
+
+    const text = document.createElement('p');
+    text.classList.add('line-clamp-5');
+    text.dataset.expandContent = message.id;
+    text.textContent = message.content;
+    bubble.appendChild(text);
 
     const moreBtn = document.createElement('button');
     moreBtn.textContent = 'more';
     moreBtn.dataset.expandToggle = message.id;
     moreBtn.style.display = 'none';
-    moreBtn.classList.add('text-xs', 'text-blue-400', 'hover:underline', 'block', 'mt-1');
-    wrapper.appendChild(moreBtn);
+    moreBtn.classList.add('nc-more-btn');
+    bubble.appendChild(moreBtn);
+
+    wrapper.appendChild(bubble);
 
     if (message.status === 'failed') {
         const retryBtn = document.createElement('button');
         retryBtn.textContent = 'Retry';
         retryBtn.dataset.retryId = message.id;
-        retryBtn.classList.add('text-xs', 'text-red-500', 'hover:underline', 'mt-1', 'block');
+        retryBtn.classList.add('text-xs', 'nc-red-text', 'hover:underline', 'mt-0.5', 'block');
         wrapper.appendChild(retryBtn);
     }
 
@@ -189,10 +195,7 @@ function createLoadingIndicator() {
     wrapper.classList.add('flex', 'justify-start');
 
     const bubble = document.createElement('div');
-    bubble.classList.add(
-        'max-w-[85%]', 'rounded-lg', 'px-3', 'py-2', 'text-sm',
-        'bg-gray-100', 'text-gray-500', 'italic'
-    );
+    bubble.classList.add('max-w-[85%]', 'px-3', 'py-2', 'text-sm', 'nc-bubble-model', 'nc-loading');
     bubble.textContent = 'Generating response…';
 
     wrapper.appendChild(bubble);
@@ -216,34 +219,33 @@ function createChatBubble(message) {
 
     const bubble = document.createElement('div');
     bubble.classList.add(
-        'max-w-[85%]', 'rounded-lg', 'px-3', 'py-2', 'text-sm',
-        ...(isUser
-            ? ['whitespace-pre-wrap', 'bg-blue-600', 'text-white']
-            : ['bg-gray-100', 'text-gray-800', 'md-content'])
+        'max-w-[85%]', 'px-3', 'py-2', 'text-sm',
+        ...(isUser ? ['nc-bubble-user', 'whitespace-pre-wrap'] : ['nc-bubble-model', 'md-content'])
     );
     if (isUser) {
         bubble.textContent = message.content;
     } else {
         bubble.innerHTML = DOMPurify.sanitize(marked.parse(message.content));
     }
+
+    // Fork button rendered inside the model bubble as a footer action, below content.
+    // Only on a summary viewed from main — in a fork the summary is a read-only header.
+    if (message.role === 'model' && message.type === 'summary' && activeThreadId === 'main') {
+        const forkBtn = document.createElement('button');
+        forkBtn.textContent = 'Fork thread';
+        forkBtn.dataset.forkAnchor = message.contextRef;
+        forkBtn.classList.add('nc-fork-btn');
+        bubble.appendChild(forkBtn);
+    }
+
     wrapper.appendChild(bubble);
 
     if (isFailed) {
         const retryBtn = document.createElement('button');
         retryBtn.textContent = 'Retry';
         retryBtn.dataset.retryId = message.id;
-        retryBtn.classList.add('text-xs', 'text-red-500', 'hover:underline');
+        retryBtn.classList.add('text-xs', 'nc-red-text', 'hover:underline');
         wrapper.appendChild(retryBtn);
-    }
-
-    // Fork button appears only on a summary, and only while viewing main.
-    // In a fork the summary is shown as a header, so it must not offer forking.
-    if (message.role === 'model' && message.type === 'summary' && activeThreadId === 'main') {
-        const forkBtn = document.createElement('button');
-        forkBtn.textContent = 'Fork thread';
-        forkBtn.dataset.forkAnchor = message.contextRef;
-        forkBtn.classList.add('text-xs', 'text-blue-400', 'hover:underline');
-        wrapper.appendChild(forkBtn);
     }
 
     // Collapsed reference toggle for synthesis messages.
@@ -252,7 +254,7 @@ function createChatBubble(message) {
         const refToggle = document.createElement('button');
         refToggle.textContent = `Using ${count} annotation${count !== 1 ? 's' : ''} ▸`;
         refToggle.dataset.toggleRefs = message.id;
-        refToggle.classList.add('text-xs', 'text-blue-400', 'hover:underline');
+        refToggle.classList.add('text-xs', 'nc-accent-text', 'hover:underline');
         wrapper.appendChild(refToggle);
 
         // Hidden container for the expanded ref list, rendered on first open.
@@ -274,9 +276,16 @@ function renderConversation(container) {
     const messages = getThreadMessages();
 
     if (!messages.length) {
-        const emptyState = document.createElement('p');
-        emptyState.textContent = 'Select text on any page and choose "Ask NoteCrawler" to start a conversation.';
-        emptyState.classList.add('empty-state');
+        const emptyState = document.createElement('div');
+        emptyState.classList.add('nc-empty-state');
+        const heading = document.createElement('p');
+        heading.classList.add('nc-empty-heading');
+        heading.textContent = 'Ready to explore';
+        const sub = document.createElement('p');
+        sub.classList.add('nc-empty-sub');
+        sub.textContent = 'Highlight text on any page and choose "Ask NoteCrawler," or type a question below.';
+        emptyState.appendChild(heading);
+        emptyState.appendChild(sub);
         container.appendChild(emptyState);
         container.scrollTop = container.scrollHeight;
         return;
@@ -323,14 +332,14 @@ async function renderContextCard() {
         header.classList.add('flex', 'items-center', 'justify-between');
 
         const label = document.createElement('span');
-        label.classList.add('text-xs', 'font-medium', 'text-gray-600');
+        label.classList.add('text-xs', 'font-medium', 'nc-text2');
         const n = pendingAnnotationRefs.length;
         label.textContent = `${n} annotation${n !== 1 ? 's' : ''} staged`;
 
         const dismissBtn = document.createElement('button');
         dismissBtn.id = 'dismiss-context-card';
         dismissBtn.textContent = '×';
-        dismissBtn.classList.add('text-gray-400', 'hover:text-gray-700', 'text-base', 'leading-none', 'px-1');
+        dismissBtn.classList.add('nc-text2', 'text-base', 'leading-none', 'px-1');
 
         header.appendChild(label);
         header.appendChild(dismissBtn);
@@ -339,7 +348,7 @@ async function renderContextCard() {
         for (const id of pendingAnnotationRefs) {
             const ann = annotations.find(a => a.id === id);
             const row = document.createElement('p');
-            row.classList.add('text-xs', 'text-gray-500', 'truncate', 'mt-1');
+            row.classList.add('text-xs', 'nc-text2', 'truncate', 'mt-1');
             if (ann) {
                 const excerpt = ann.content.length > 40 ? ann.content.slice(0, 40) + '…' : ann.content;
                 row.textContent = ann.pageTitle ? `${ann.pageTitle} — ${excerpt}` : excerpt;
@@ -360,7 +369,7 @@ async function renderContextCard() {
     header.classList.add('flex', 'items-center', 'justify-between');
 
     const label = document.createElement('span');
-    label.classList.add('text-xs', 'font-medium', 'text-gray-600');
+    label.classList.add('text-xs', 'font-medium', 'nc-text2');
     const n = tabIds.length;
     label.textContent = `${n} tab${n !== 1 ? 's' : ''} in scope`;
 
@@ -377,7 +386,7 @@ async function renderContextCard() {
             // Tab closed but not yet pruned — show neutral fallback.
         }
         const row = document.createElement('p');
-        row.classList.add('text-xs', 'text-gray-500', 'truncate', 'mt-1');
+        row.classList.add('text-xs', 'nc-text3', 'truncate', 'mt-1');
         row.textContent = title || `Tab ${tabId}`;
         card.appendChild(row);
     }
@@ -385,11 +394,8 @@ async function renderContextCard() {
 
 function createSessionMenuItem(sessionId, label) {
     const btn = document.createElement('button');
-    btn.classList.add(
-        'w-full', 'text-left', 'px-3', 'py-1.5', 'text-xs',
-        'hover:bg-gray-50', 'text-gray-700', 'truncate'
-    );
-    if (sessionId === activeSessionId) btn.classList.add('font-semibold', 'text-blue-600');
+    btn.classList.add('w-full', 'text-left', 'px-3', 'py-1.5', 'text-xs', 'nc-menu-btn', 'truncate');
+    if (sessionId === activeSessionId) btn.classList.add('nc-active');
     btn.textContent = label;
     btn.dataset.sessionId = sessionId;
     return btn;
@@ -397,12 +403,9 @@ function createSessionMenuItem(sessionId, label) {
 
 function createThreadMenuItem(threadId, label, isChild) {
     const btn = document.createElement('button');
-    btn.classList.add(
-        'w-full', 'text-left', 'px-3', 'py-1.5', 'text-xs',
-        'hover:bg-gray-50', 'text-gray-700', 'truncate'
-    );
+    btn.classList.add('w-full', 'text-left', 'px-3', 'py-1.5', 'text-xs', 'nc-menu-btn', 'truncate');
     if (isChild) btn.classList.add('pl-6');
-    if (threadId === activeThreadId) btn.classList.add('font-semibold', 'text-blue-600');
+    if (threadId === activeThreadId) btn.classList.add('nc-active');
     // 'main' never gets ↳ even when indented under a session entry
     btn.textContent = (isChild && threadId !== 'main' ? '↳ ' : '') + label;
     btn.dataset.threadId = threadId;
@@ -626,10 +629,17 @@ function renderAnnotations() {
     list.innerHTML = '';
 
     if (!annotations.length) {
-        const empty = document.createElement('p');
-        empty.textContent = 'No annotations yet. Select text on a page and choose "Add annotation."';
-        empty.classList.add('empty-state');
-        list.appendChild(empty);
+        const emptyState = document.createElement('div');
+        emptyState.classList.add('nc-empty-state');
+        const heading = document.createElement('p');
+        heading.classList.add('nc-empty-heading');
+        heading.textContent = 'No annotations yet';
+        const sub = document.createElement('p');
+        sub.classList.add('nc-empty-sub');
+        sub.textContent = 'Select text on any page and choose "Add Annotation" to save it here.';
+        emptyState.appendChild(heading);
+        emptyState.appendChild(sub);
+        list.appendChild(emptyState);
         return;
     }
 
@@ -638,16 +648,12 @@ function renderAnnotations() {
 
         const card = document.createElement('div');
         card.dataset.annotationId = ann.id;
-        card.classList.add('rounded-lg', 'border', 'p-3');
-        if (isSelected) {
-            card.classList.add('bg-gray-100', 'border-gray-300');
-        } else {
-            card.classList.add('border-gray-200');
-        }
+        card.classList.add('nc-card', 'p-3');
+        if (isSelected) card.classList.add('nc-card-selected');
         card.style.cursor = 'pointer';
 
         const content = document.createElement('p');
-        content.classList.add('text-sm', 'text-gray-800', 'line-clamp-5');
+        content.classList.add('text-sm', 'line-clamp-5');
         content.dataset.expandContent = ann.id;
         content.textContent = ann.content;
 
@@ -655,10 +661,10 @@ function renderAnnotations() {
         moreBtn.textContent = 'more';
         moreBtn.dataset.expandToggle = ann.id;
         moreBtn.style.display = 'none';
-        moreBtn.classList.add('text-xs', 'text-blue-400', 'hover:underline', 'block', 'mt-1');
+        moreBtn.classList.add('nc-more-btn');
 
         const meta = document.createElement('p');
-        meta.classList.add('text-xs', 'text-gray-400', 'mt-1');
+        meta.classList.add('text-xs', 'nc-text3', 'mt-1');
         const truncUrl = ann.sourceUrl.length > 40 ? ann.sourceUrl.slice(0, 40) + '…' : ann.sourceUrl;
         meta.textContent = `${ann.pageTitle} · ${truncUrl}`;
 
@@ -688,13 +694,13 @@ function switchTab(tab) {
 
     if (tabConv) {
         tabConv.classList.toggle('font-semibold', isConv);
-        tabConv.classList.toggle('text-blue-600', isConv);
-        tabConv.classList.toggle('text-gray-500', !isConv);
+        tabConv.classList.toggle('nc-tab-active', isConv);
+        tabConv.classList.toggle('nc-tab-inactive', !isConv);
     }
     if (tabAnn) {
         tabAnn.classList.toggle('font-semibold', !isConv);
-        tabAnn.classList.toggle('text-blue-600', !isConv);
-        tabAnn.classList.toggle('text-gray-500', isConv);
+        tabAnn.classList.toggle('nc-tab-active', !isConv);
+        tabAnn.classList.toggle('nc-tab-inactive', isConv);
     }
 
     if (tab === 'annotations') renderAnnotations();
@@ -874,16 +880,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             for (const id of (msg?.annotationRefs || [])) {
                 const ann = annotations.find(a => a.id === id);
                 const row = document.createElement('div');
-                row.classList.add(
-                    'rounded-lg', 'border', 'border-gray-200',
-                    'px-3', 'py-1.5', 'text-xs', 'text-gray-600', 'max-w-[85%]'
-                );
+                row.classList.add('nc-card', 'px-3', 'py-1.5', 'text-xs', 'nc-text2', 'max-w-[85%]');
                 if (ann) {
                     const excerpt = ann.content.length > 40 ? ann.content.slice(0, 40) + '…' : ann.content;
                     row.textContent = ann.pageTitle ? `${ann.pageTitle} — ${excerpt}` : excerpt;
                 } else {
                     row.textContent = '(annotation removed)';
-                    row.classList.add('italic', 'text-gray-400');
+                    row.classList.add('italic', 'nc-text3');
                 }
                 refsEl.appendChild(row);
             }
@@ -919,12 +922,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const id = card.dataset.annotationId;
         if (selectedAnnotationIds.has(id)) {
             selectedAnnotationIds.delete(id);
-            card.classList.remove('bg-gray-100', 'border-gray-300');
-            card.classList.add('border-gray-200');
+            card.classList.remove('nc-card-selected');
         } else {
             selectedAnnotationIds.add(id);
-            card.classList.remove('border-gray-200');
-            card.classList.add('bg-gray-100', 'border-gray-300');
+            card.classList.add('nc-card-selected');
         }
         updateAskButton();
     });
