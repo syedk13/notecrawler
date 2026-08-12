@@ -940,19 +940,4 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     updateAskButton();
 
-    // TEMP: remove after verifying READ_SESSION_TABS round-trip.
-    const testReadBtn = document.getElementById('test-read-btn');
-    if (testReadBtn) {
-        testReadBtn.addEventListener('click', () => {
-            const session = sessions[activeSessionId] || {};
-            const tabIds = session.tabIds || [];
-            chrome.runtime.sendMessage({ type: 'READ_SESSION_TABS', tabIds }, results => {
-                if (chrome.runtime.lastError) {
-                    console.error('READ_SESSION_TABS error:', chrome.runtime.lastError);
-                    return;
-                }
-                console.log('READ_SESSION_TABS results:', results);
-            });
-        });
-    }
 });
