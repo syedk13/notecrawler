@@ -216,10 +216,16 @@ function createChatBubble(message) {
 
     const bubble = document.createElement('div');
     bubble.classList.add(
-        'max-w-[85%]', 'rounded-lg', 'px-3', 'py-2', 'text-sm', 'whitespace-pre-wrap',
-        ...(isUser ? ['bg-blue-600', 'text-white'] : ['bg-gray-100', 'text-gray-800'])
+        'max-w-[85%]', 'rounded-lg', 'px-3', 'py-2', 'text-sm',
+        ...(isUser
+            ? ['whitespace-pre-wrap', 'bg-blue-600', 'text-white']
+            : ['bg-gray-100', 'text-gray-800', 'md-content'])
     );
-    bubble.textContent = message.content;
+    if (isUser) {
+        bubble.textContent = message.content;
+    } else {
+        bubble.innerHTML = DOMPurify.sanitize(marked.parse(message.content));
+    }
     wrapper.appendChild(bubble);
 
     if (isFailed) {

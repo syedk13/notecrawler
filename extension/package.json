@@ -15,5 +15,9 @@
   "dependencies": {
     "@tailwindcss/cli": "^4.3.2",
     "tailwindcss": "^4.3.2"
+  },
+  "devDependencies": {
+    "dompurify": "^3.4.13",
+    "marked": "^18.0.9"
   }
 }
