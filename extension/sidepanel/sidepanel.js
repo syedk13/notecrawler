@@ -7,6 +7,11 @@ let activeSessionId = '';
 let activeTab = 'conversation';
 let pendingAnnotationRefs = [];
 const selectedAnnotationIds = new Set();
+// Signature of the restricted-tab set the user last dismissed. Deliberately NOT
+// persisted to chrome.storage. Keying it to the set (rather than a bare boolean)
+// means a newly restricted tab re-surfaces the notice, while re-renders that do
+// not change membership keep it hidden.
+let dismissedRestrictedKey = '';
 
 // --- Storage helpers ---
 
@@ -92,6 +97,112 @@ async function addTabToSession(sessionId, tabId) {
     await chrome.storage.local.set({
         sessions: { ...s, [sessionId]: { ...session, tabIds: [...tabIds, tabId] } }
     });
+}
+
+// --- Restricted tab detection ---
+
+// Pages that extensions categorically cannot script. Matched on the tab URL
+// alone -- no injection probe, so this costs nothing and never spends a request.
+const RESTRICTED_SCHEMES = [
+    'chrome://',
+    'chrome-extension://',
+    'edge://',
+    'about:',
+    'view-source:',
+    'file://',
+];
+
+// http:// cannot live in the list above because it needs an exception: the only
+// plain-http hosts the extension may script are the local dev server's.
+const LOCAL_HTTP_HOSTNAMES = ['localhost', '127.0.0.1'];
+
+function isRestrictedUrl(url) {
+    if (typeof url !== 'string' || !url) return false; // unknown -> do not warn
+    const lower = url.toLowerCase();
+    if (RESTRICTED_SCHEMES.some(scheme => lower.startsWith(scheme))) return true;
+    // The Chrome Web Store blocks extension scripting, on its current host and
+    // the legacy one.
+    if (lower.startsWith('https://chromewebstore.google.com/')) return true;
+    if (lower.startsWith('https://chrome.google.com/webstore')) return true;
+    // host_permissions grants https://*/* but only http://localhost:3000/*, so a
+    // non-local http:// page fails injection exactly like a chrome:// page does.
+    // ('https://' does not match this prefix, so secure pages are unaffected.)
+    if (lower.startsWith('http://')) {
+        let hostname;
+        try {
+            hostname = new URL(url).hostname.toLowerCase();
+        } catch {
+            return false; // unparseable -> same fallback as a missing URL
+        }
+        // Compared as a whole hostname, not a substring, so a lookalike host such
+        // as http://localhost.example.com stays restricted.
+        return !LOCAL_HTTP_HOSTNAMES.includes(hostname);
+    }
+    return false;
+}
+
+// Resolves every in-scope tab once. chrome.tabs.get is the only source for both
+// the title the indicator shows and the URL the warning needs, so they are read
+// together rather than twice.
+async function readScopedTabs(tabIds) {
+    const scoped = [];
+    for (const tabId of tabIds) {
+        let title = '';
+        let url = '';
+        try {
+            // title and url both require the "tabs" permission, already granted.
+            const tab = await chrome.tabs.get(tabId);
+            title = tab.title || '';
+            url = tab.url || '';
+        } catch {
+            // Tab closed but not yet pruned by background.js -- neutral fallback.
+        }
+        scoped.push({ tabId, title, url, restricted: isRestrictedUrl(url) });
+    }
+    return scoped;
+}
+
+// Identifies a restricted set so dismissal can be scoped to exactly that set.
+function restrictedKeyFor(scopedTabs) {
+    return scopedTabs
+        .filter(tab => tab.restricted)
+        .map(tab => tab.tabId)
+        .sort((a, b) => a - b)
+        .join(',');
+}
+
+// One muted, dismissible notice for the whole restricted set -- never one per
+// tab. Informational only: it does not block submission and does not change what
+// generateResponse sends.
+function appendRestrictedWarning(card, scopedTabs) {
+    const count = scopedTabs.filter(tab => tab.restricted).length;
+    if (count === 0) return;
+
+    const key = restrictedKeyFor(scopedTabs);
+    if (key === dismissedRestrictedKey) return;
+
+    const notice = document.createElement('div');
+    notice.dataset.restrictedWarning = key;
+    notice.classList.add('flex', 'items-center', 'justify-between', 'mt-2');
+    // Hairline divider, matching the in-bubble notices. Inline because the nc-*
+    // palette classes live in sidepanel.html, which this change does not touch.
+    notice.style.cssText = 'padding-top:0.375rem;border-top:1px solid rgba(255,255,255,0.08);';
+
+    const label = document.createElement('span');
+    // Muted rather than alarming: the glyph carries the signal, not the colour.
+    label.classList.add('text-xs', 'nc-text2', 'truncate');
+    label.textContent = `\u26A0 ${count} tab${count !== 1 ? 's' : ''} could not be read`;
+
+    const dismissBtn = document.createElement('button');
+    // The key rides on the button so the handler needs no extra module state.
+    dismissBtn.dataset.dismissRestricted = key;
+    dismissBtn.textContent = '\u00D7';
+    dismissBtn.title = 'Dismiss';
+    dismissBtn.classList.add('nc-text2', 'text-base', 'leading-none', 'px-1', 'shrink-0');
+
+    notice.appendChild(label);
+    notice.appendChild(dismissBtn);
+    card.appendChild(notice);
 }
 
 // --- View filter ---
@@ -367,6 +478,12 @@ async function renderContextCard() {
     const card = document.getElementById('context-card');
     if (!card) return;
 
+    // Resolve tabs first, then build. Awaiting before clearing keeps every DOM
+    // mutation below synchronous, so two overlapping renders cannot interleave
+    // one's clear with the other's appends.
+    const activeSession = sessions[activeSessionId] || {};
+    const scopedTabs = await readScopedTabs(activeSession.tabIds || []);
+
     card.style.display = '';
     card.innerHTML = '';
 
@@ -405,38 +522,32 @@ async function renderContextCard() {
             }
             card.appendChild(row);
         }
+        // Tab content is merged into synthesis requests too, so a restricted
+        // source is silently lost in this path as well -- warn here also.
+        appendRestrictedWarning(card, scopedTabs);
         return;
     }
 
     // Priority 2: tab-tracking indicator (display-only).
-    const session = sessions[activeSessionId] || {};
-    const tabIds = session.tabIds || [];
-
     const header = document.createElement('div');
     header.classList.add('flex', 'items-center', 'justify-between');
 
     const label = document.createElement('span');
     label.classList.add('text-xs', 'font-medium', 'nc-text2');
-    const n = tabIds.length;
+    const n = scopedTabs.length;
     label.textContent = `${n} tab${n !== 1 ? 's' : ''} in scope`;
 
     header.appendChild(label);
     card.appendChild(header);
 
-    for (const tabId of tabIds) {
-        // tab.title requires the "tabs" manifest permission; falls back to id-based label.
-        let title = '';
-        try {
-            const tab = await chrome.tabs.get(tabId);
-            title = tab.title || '';
-        } catch {
-            // Tab closed but not yet pruned — show neutral fallback.
-        }
+    for (const { tabId, title } of scopedTabs) {
         const row = document.createElement('p');
         row.classList.add('text-xs', 'nc-text3', 'truncate', 'mt-1');
         row.textContent = title || `Tab ${tabId}`;
         card.appendChild(row);
     }
+
+    appendRestrictedWarning(card, scopedTabs);
 }
 
 function createSessionMenuItem(sessionId, label) {
@@ -896,6 +1007,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     contextCard.addEventListener('click', async e => {
+        // Dismissal is in-memory only and scoped to this exact restricted set, so
+        // the notice returns if a different restricted tab later joins.
+        const dismissKey = e.target.dataset.dismissRestricted;
+        if (dismissKey !== undefined) {
+            dismissedRestrictedKey = dismissKey;
+            renderContextCard();
+            return;
+        }
+
         if (e.target.id === 'dismiss-context-card') {
             await chrome.storage.local.set({ pendingAnnotationRefs: [] });
         }
