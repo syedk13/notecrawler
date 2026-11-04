@@ -93,6 +93,62 @@ function buildContents(sources, prompt, history) {
     return contents;
 }
 
+// Phrases that indicate the request exceeded the model's input token/size limit.
+// Matched case-insensitively against the error message and any SDK detail text.
+const TOKEN_LIMIT_PATTERNS = [
+    'token count',
+    'tokens allowed',
+    'maximum number of tokens',
+    'too many tokens',
+    'token limit',
+    'input is too long',
+    'context length',
+    'context window',
+    'payload size exceeds',
+    'request entity too large',
+    'request too large',
+];
+
+// Classify a caught /generate failure so the client can branch on the error type
+// rather than the HTTP status. Fully defensive: it inspects whatever shape the
+// error happens to have and never throws — anything unrecognized or unreadable
+// falls through to 'server_error'.
+function classifyError(err) {
+    try {
+        const parts = [];
+        const push = value => { if (typeof value === 'string' && value) parts.push(value); };
+
+        if (err !== null && typeof err === 'object') {
+            push(err.message);
+            push(err.statusText);
+            if (err.errorDetails != null) {
+                // errorDetails may contain circular refs or unserializable values.
+                try { push(JSON.stringify(err.errorDetails)); } catch { /* skip */ }
+            }
+        } else {
+            push(String(err));
+        }
+
+        const haystack = parts.join(' ').toLowerCase();
+        if (TOKEN_LIMIT_PATTERNS.some(pattern => haystack.includes(pattern))) {
+            return 'token_limit';
+        }
+
+        // 413 is unambiguously an input-size rejection. A bare 400 is not —
+        // malformed requests and safety blocks also return 400, so status alone
+        // is only trusted for 413; everything else must match on message text.
+        const statuses = [err?.status, err?.statusCode, err?.code, err?.response?.status];
+        if (statuses.some(status => Number(status) === 413)) {
+            return 'token_limit';
+        }
+
+        return 'server_error';
+    } catch {
+        // Classification itself must never surface an error to the caller.
+        return 'server_error';
+    }
+}
+
 app.post('/generate', async (req, res) => {
     console.log('Received request at /generate');
     try {
@@ -103,7 +159,8 @@ app.post('/generate', async (req, res) => {
         res.json({ reply });
     } catch (err) {
         console.error('Gemini generation failed:', err);
-        res.status(500).json({ error: err.message });
+        const type = classifyError(err);
+        res.status(500).json({ error: err?.message ?? String(err), type });
     }
 });
 
