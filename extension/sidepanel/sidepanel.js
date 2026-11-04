@@ -154,6 +154,60 @@ function reconcilePending(state) {
     }
 }
 
+// --- Failure presentation ---
+
+// Copy shown inside the bubble for each failure type. The keys are also the set
+// of types generateResponse will accept from the server.
+const FAILURE_COPY = {
+    network:      "Couldn't reach the server.",
+    server_error: 'Something went wrong.',
+    token_limit:  'This request was too large to process. Try removing a source or shortening your selection.',
+};
+
+// token_limit is deliberately absent: the identical request would fail the same
+// way, so the retry control is omitted rather than rendered disabled.
+const RETRYABLE_FAILURES = new Set(['network', 'server_error']);
+
+// Builds the in-bubble failure notice for a user message whose request failed.
+// It is appended inside the bubble so it reads as part of the message, matching
+// where the "more" and "Fork thread" controls now sit.
+//
+// Styling is inline rather than class-based because the nc-* palette classes live
+// in sidepanel.html, which this task does not touch; the CSS variables it
+// references are declared on :root there and so are available here.
+function createFailureNotice(message) {
+    // Messages that failed before failureType existed fall back to the generic
+    // retry-able case rather than rendering an empty notice.
+    const type = FAILURE_COPY[message.failureType] ? message.failureType : 'server_error';
+
+    const notice = document.createElement('div');
+    notice.dataset.failureNotice = message.id;
+    // Hairline divider, as .nc-fork-btn uses. Neutral white alpha so it reads on
+    // the blue-tinted user bubble and the grey highlight bubble alike.
+    notice.style.cssText =
+        'margin-top:0.5rem;padding-top:0.375rem;border-top:1px solid rgba(255,255,255,0.1);';
+
+    const text = document.createElement('p');
+    text.classList.add('text-xs', 'nc-red-text');
+    // Reset the italics inherited from .nc-bubble-highlight and the pre-wrap
+    // inherited from the user bubble, so the notice wraps as ordinary prose.
+    text.style.cssText = 'font-style:normal;white-space:normal;line-height:1.45;';
+    text.textContent = FAILURE_COPY[type];
+    notice.appendChild(text);
+
+    if (RETRYABLE_FAILURES.has(type)) {
+        const retryBtn = document.createElement('button');
+        retryBtn.textContent = 'Retry';
+        // Unchanged hook: the delegated handler keys off data-retryId.
+        retryBtn.dataset.retryId = message.id;
+        retryBtn.classList.add('text-xs', 'nc-accent-text', 'hover:underline', 'block');
+        retryBtn.style.cssText = 'font-style:normal;margin-top:0.25rem;font-weight:500;';
+        notice.appendChild(retryBtn);
+    }
+
+    return notice;
+}
+
 // --- DOM builders ---
 
 function createHighlightCard(message) {
@@ -177,15 +231,11 @@ function createHighlightCard(message) {
     moreBtn.classList.add('nc-more-btn');
     bubble.appendChild(moreBtn);
 
-    wrapper.appendChild(bubble);
-
     if (message.status === 'failed') {
-        const retryBtn = document.createElement('button');
-        retryBtn.textContent = 'Retry';
-        retryBtn.dataset.retryId = message.id;
-        retryBtn.classList.add('text-xs', 'nc-red-text', 'hover:underline', 'mt-0.5', 'block');
-        wrapper.appendChild(retryBtn);
+        bubble.appendChild(createFailureNotice(message));
     }
+
+    wrapper.appendChild(bubble);
 
     return wrapper;
 }
@@ -210,7 +260,8 @@ function createChatBubble(message) {
     const wrapper = document.createElement('div');
     if (!isUser) {
         wrapper.classList.add('flex', 'flex-col', 'items-start', 'gap-0.5');
-    } else if (isFailed || hasRefs) {
+    } else if (hasRefs) {
+        // Only the refs toggle still renders outside the bubble.
         wrapper.classList.add('flex', 'flex-col', 'items-end', 'gap-1');
     } else {
         wrapper.classList.add('flex', 'justify-end');
@@ -238,15 +289,11 @@ function createChatBubble(message) {
         bubble.appendChild(forkBtn);
     }
 
-    wrapper.appendChild(bubble);
-
     if (isFailed) {
-        const retryBtn = document.createElement('button');
-        retryBtn.textContent = 'Retry';
-        retryBtn.dataset.retryId = message.id;
-        retryBtn.classList.add('text-xs', 'nc-red-text', 'hover:underline');
-        wrapper.appendChild(retryBtn);
+        bubble.appendChild(createFailureNotice(message));
     }
+
+    wrapper.appendChild(bubble);
 
     // Collapsed reference toggle for synthesis messages.
     if (hasRefs) {
@@ -451,8 +498,11 @@ function renderThreadMenu() {
 async function generateResponse(messageId) {
     try {
         if (FORCE_MOCK_FAILURE) {
+            // Set FORCE_MOCK_FAILURE to a failure type ('network' | 'server_error' |
+            // 'token_limit') to preview that notice, or to true for the generic one.
+            const mockType = FAILURE_COPY[FORCE_MOCK_FAILURE] ? FORCE_MOCK_FAILURE : 'server_error';
             await modifyState(state =>
-                state.map(msg => msg.id === messageId ? { ...msg, status: 'failed' } : msg)
+                state.map(msg => msg.id === messageId ? { ...msg, status: 'failed', failureType: mockType } : msg)
             );
             return;
         }
@@ -529,20 +579,47 @@ async function generateResponse(messageId) {
         }
 
         let reply;
+        let failureType = null;
         try {
             const res = await fetch('http://localhost:3000/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sources, prompt, history: [] })
             });
-            if (!res.ok) throw new Error(`Server responded with ${res.status}`);
-            const data = await res.json();
-            if (typeof data.reply !== 'string') throw new Error('Malformed server response');
-            reply = data.reply;
+
+            if (res.ok) {
+                let data = null;
+                try { data = await res.json(); } catch { /* malformed success body */ }
+                if (typeof data?.reply === 'string') {
+                    reply = data.reply;
+                } else {
+                    // The server answered, but not with a usable payload.
+                    console.error('NoteCrawler /generate returned a malformed response');
+                    failureType = 'server_error';
+                }
+            } else {
+                // The server classifies its own failures. Trust its type when it
+                // sends a recognized one; fall back to a generic server error when
+                // the body is absent, unparseable, or carries no usable type.
+                failureType = 'server_error';
+                try {
+                    const body = await res.json();
+                    if (FAILURE_COPY[body?.type] && body.type !== 'network') {
+                        failureType = body.type;
+                    }
+                } catch { /* non-JSON error body, e.g. a proxy error page */ }
+                console.error(`NoteCrawler /generate failed: ${res.status} (${failureType})`);
+            }
         } catch (err) {
+            // fetch() rejects only when no response arrived at all: server down,
+            // offline, DNS or CORS failure.
             console.error('NoteCrawler /generate request failed:', err);
+            failureType = 'network';
+        }
+
+        if (failureType) {
             await modifyState(state =>
-                state.map(msg => msg.id === messageId ? { ...msg, status: 'failed' } : msg)
+                state.map(msg => msg.id === messageId ? { ...msg, status: 'failed', failureType } : msg)
             );
             return;
         }
@@ -829,7 +906,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (retryId) {
             inFlight.add(retryId);
             await modifyState(messages =>
-                messages.map(msg => msg.id === retryId ? { ...msg, status: 'pending' } : msg)
+                messages.map(msg => {
+                    if (msg.id !== retryId) return msg;
+                    // Drop failureType entirely rather than nulling it, so a stale
+                    // type can never leak into a later render.
+                    const { failureType: _cleared, ...rest } = msg;
+                    return { ...rest, status: 'pending' };
+                })
             );
             generateResponse(retryId);
             return;
