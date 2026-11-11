@@ -173,18 +173,122 @@ function classifyError(err) {
     }
 }
 
+// Open the NDJSON response. Called lazily, immediately before the first line is
+// written, because flushing headers is the point of no return: until it happens
+// the status code is still ours to choose, so a failure before the first chunk
+// can still answer with the original 500 + JSON error shape.
+function beginNdjsonStream(res) {
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    // no-transform tells intermediaries not to buffer or recompress the body;
+    // X-Accel-Buffering disables the response buffer if nginx is ever in front.
+    // Without these a proxy can hold chunks back and defeat the streaming.
+    res.setHeader('Cache-Control', 'no-cache, no-store, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    // No Content-Length is set, so Node falls back to chunked transfer encoding.
+    res.flushHeaders();
+}
+
+// Write one newline-terminated JSON object. JSON.stringify escapes any newlines
+// inside the text, so a chunk can never split itself across two NDJSON lines.
+// Returns false when the line could not be written — i.e. the client is gone.
+function writeStreamLine(res, payload) {
+    if (res.writableEnded || res.destroyed) return false;
+    try {
+        res.write(JSON.stringify(payload) + '\n');
+        // flush() only exists when a compression middleware has wrapped the
+        // response. None is installed today, but guard so adding one later
+        // doesn't start buffering the stream silently.
+        if (typeof res.flush === 'function') res.flush();
+        return true;
+    } catch (err) {
+        console.error('Failed to write stream line:', err);
+        return false;
+    }
+}
+
 app.post('/generate', async (req, res) => {
     console.log('Received request at /generate');
+
+    // Flips the moment the first NDJSON byte leaves the server. It is the
+    // boundary between the two error paths: before it, a failure is reported with
+    // an HTTP status; after it, the status is already on the wire and the only
+    // way to report a failure is an NDJSON error line.
+    let streamStarted = false;
+
+    // Closing the side panel aborts the request mid-stream. Stop pulling chunks
+    // from Gemini rather than writing into a dead socket. 'close' also fires
+    // after a normal end(), hence the writableEnded guard.
+    let clientGone = false;
+    res.on('close', () => {
+        if (!res.writableEnded) clientGone = true;
+    });
+
     try {
         const { sources = [], prompt = '', history = [] } = req.body;
         const contents = buildContents(sources, prompt, history);
-        const result = await model.generateContent({ contents });
-        const reply = result.response.text();
-        res.json({ reply });
+
+        // Rejects for auth failures, a bad model name and oversized input. All of
+        // those happen before any output, so they reach the catch below while
+        // streamStarted is still false and keep the original 500 + JSON contract.
+        const result = await model.generateContentStream({ contents });
+
+        // The SDK also exposes a promise for the aggregated response. We consume
+        // the stream directly and never await it, so attach a no-op handler to
+        // stop a stream failure from also surfacing as an unhandled rejection.
+        if (typeof result?.response?.catch === 'function') {
+            result.response.catch(() => {});
+        }
+
+        for await (const chunk of result.stream) {
+            if (clientGone) break;
+
+            // A chunk can legitimately carry no text (safety ratings, usage
+            // metadata) or throw while decoding. Neither ends the stream.
+            let text = '';
+            try {
+                text = chunk.text();
+            } catch (err) {
+                console.error('Skipping unreadable stream chunk:', err);
+                continue;
+            }
+            if (!text) continue;
+
+            if (!streamStarted) {
+                beginNdjsonStream(res);
+                streamStarted = true;
+            }
+            if (!writeStreamLine(res, { type: 'chunk', text })) {
+                clientGone = true;
+                break;
+            }
+        }
+
+        // Nothing worth saying to a client that already hung up.
+        if (clientGone) return res.end();
+
+        // A response that produced no text at all still needs a well-formed body,
+        // so open the stream now and let the client see an empty-but-valid result
+        // rather than a hanging request.
+        if (!streamStarted) {
+            beginNdjsonStream(res);
+            streamStarted = true;
+        }
+        writeStreamLine(res, { type: 'done' });
+        res.end();
     } catch (err) {
         console.error('Gemini generation failed:', err);
         const type = classifyError(err);
-        res.status(500).json({ error: err?.message ?? String(err), type });
+
+        // Pre-stream failure: unchanged from the blocking implementation.
+        if (!streamStarted) {
+            return res.status(500).json({ error: err?.message ?? String(err), type });
+        }
+
+        // In-stream failure: the 200 is already sent, so the failure has to ride
+        // down the stream as its last line. `errorType` is the canonical field
+        // name on the wire; the taxonomy itself still comes from classifyError.
+        writeStreamLine(res, { type: 'error', errorType: type });
+        res.end();
     }
 });
 
